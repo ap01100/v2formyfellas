@@ -86,7 +86,7 @@ class V2RayConfig:
 
 
 def remove_duplicates(configs):
-    """Remove duplicate configurations"""
+    """Remove duplicate configurations while preserving original strings"""
     unique_configs = set()
     result = []
     
@@ -189,6 +189,7 @@ def test_tcp_connectivity(configs, max_workers=10):
         ping_time = tcp_ping(v2ray_config.server, v2ray_config.port)
         if ping_time:
             v2ray_config.tcp_ping_time = ping_time
+            # Return original config string with V2RayConfig object
             return config, v2ray_config
         return None
     
@@ -198,8 +199,7 @@ def test_tcp_connectivity(configs, max_workers=10):
             try:
                 res = future.result()
                 if res:
-                    config, v2ray_config = res
-                    result.append((config, v2ray_config))
+                    result.append(res)
                     success += 1
             except Exception as e:
                 logger.error(f"Error in TCP connectivity test: {e}")
@@ -307,10 +307,10 @@ def final_test(configs, max_workers=10):
     
     logger.info(f"Final tests completed: {success}/{total} configurations passed")
     
-    # 5. Sort by TCP ping time
+    # 5. Sort by TCP ping time but keep original configs
     result.sort(key=lambda x: x[1].tcp_ping_time)
     
-    # Return only the config strings
+    # Return only the ORIGINAL config strings, preserving all details
     return [config for config, _ in result]
 
 
@@ -343,7 +343,7 @@ def main():
         configs = final_test(configs)
         logger.info(f"After final tests: {len(configs)} configurations")
         
-        # Write results to output file
+        # Write results to output file - original configurations only
         with open(output_file, 'w') as f:
             for config in configs:
                 f.write(f"{config}\n")

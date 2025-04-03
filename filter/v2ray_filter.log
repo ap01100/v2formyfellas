@@ -139,3 +139,30 @@
 2025-04-03 19:07:37,528 - v2ray_filter - INFO - Final tests completed: 319/319 configurations passed
 2025-04-03 19:07:37,530 - v2ray_filter - INFO - After final tests: 319 configurations
 2025-04-03 19:07:37,530 - v2ray_filter - INFO - Successfully wrote 319 valid configurations to output_configs.txt
+2025-04-03 19:37:36,543 - v2ray_filter - INFO - Starting V2Ray configuration filtering process
+2025-04-03 19:37:36,544 - v2ray_filter - INFO - Read 599 configurations from input_configs.txt
+2025-04-03 19:37:36,545 - v2ray_filter - ERROR - Error parsing config: invalid literal for int() with base 10: '8766?plugin=obfs-local;obfs%3Dhttp;obfs-host%3D202503170996717-V7W8Ez6eLg.download.microsoft.com'
+2025-04-03 19:37:36,545 - v2ray_filter - ERROR - Error parsing config: invalid literal for int() with base 10: '8771?plugin=obfs-local;obfs%3Dhttp;obfs-host%3D202503170996717-V7W8Ez6eLg.download.microsoft.com'
+2025-04-03 19:37:36,545 - v2ray_filter - ERROR - Error parsing config: invalid literal for int() with base 10: '8769?plugin=obfs-local;obfs%3Dhttp;obfs-host%3D202503170996717-V7W8Ez6eLg.download.microsoft.com'
+2025-04-03 19:37:36,545 - v2ray_filter - ERROR - Error parsing config: invalid literal for int() with base 10: '8776?plugin=obfs-local;obfs%3Dhttp;obfs-host%3D202503170996717-V7W8Ez6eLg.download.microsoft.com'
+2025-04-03 19:37:36,549 - v2ray_filter - INFO - Removed duplicates: 6 duplicates found
+2025-04-03 19:37:36,549 - v2ray_filter - INFO - After removing duplicates: 593 configurations
+2025-04-03 19:37:36,549 - v2ray_filter - INFO - Starting TCP connectivity test for 593 configurations
+2025-04-03 19:38:21,465 - v2ray_filter - INFO - Starting V2Ray configuration filtering process
+2025-04-03 19:38:21,466 - v2ray_filter - INFO - Read 599 configurations from input_configs.txt
+2025-04-03 19:38:21,467 - v2ray_filter - ERROR - Error parsing config: invalid literal for int() with base 10: '8766?plugin=obfs-local;obfs%3Dhttp;obfs-host%3D202503170996717-V7W8Ez6eLg.download.microsoft.com'
+2025-04-03 19:38:21,467 - v2ray_filter - ERROR - Error parsing config: invalid literal for int() with base 10: '8771?plugin=obfs-local;obfs%3Dhttp;obfs-host%3D202503170996717-V7W8Ez6eLg.download.microsoft.com'
+2025-04-03 19:38:21,467 - v2ray_filter - ERROR - Error parsing config: invalid literal for int() with base 10: '8769?plugin=obfs-local;obfs%3Dhttp;obfs-host%3D202503170996717-V7W8Ez6eLg.download.microsoft.com'
+2025-04-03 19:38:21,467 - v2ray_filter - ERROR - Error parsing config: invalid literal for int() with base 10: '8776?plugin=obfs-local;obfs%3Dhttp;obfs-host%3D202503170996717-V7W8Ez6eLg.download.microsoft.com'
+2025-04-03 19:38:21,471 - v2ray_filter - INFO - Removed duplicates: 6 duplicates found
+2025-04-03 19:38:21,471 - v2ray_filter - INFO - After removing duplicates: 593 configurations
+2025-04-03 19:38:21,471 - v2ray_filter - INFO - Starting TCP connectivity test for 593 configurations
+2025-04-03 19:38:49,045 - v2ray_filter - INFO - TCP connectivity test completed: 546/593 configurations passed
+2025-04-03 19:38:49,047 - v2ray_filter - INFO - After TCP ping test: 546 configurations
+2025-04-03 19:38:49,047 - v2ray_filter - INFO - Starting URL connectivity test for 546 configurations
+2025-04-03 19:39:47,520 - v2ray_filter - INFO - URL connectivity test completed: 510/546 configurations passed
+2025-04-03 19:39:47,522 - v2ray_filter - INFO - After URL connectivity test: 510 configurations
+2025-04-03 19:39:47,522 - v2ray_filter - INFO - Starting final tests for 510 configurations
+2025-04-03 19:44:34,614 - v2ray_filter - INFO - Final tests completed: 509/510 configurations passed
+2025-04-03 19:44:34,616 - v2ray_filter - INFO - After final tests: 509 configurations
+2025-04-03 19:44:34,617 - v2ray_filter - INFO - Successfully wrote 509 valid configurations to output_configs.txt
