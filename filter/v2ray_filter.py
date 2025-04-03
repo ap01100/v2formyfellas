@@ -33,6 +33,9 @@ class V2RayConfig:
         self.server = None
         self.port = None
         self.parsed = False
+        self.tcp_ping_time = None
+        self.in_ip = None
+        self.out_ip = None
         self.parse_config()
     
     def parse_config(self):
@@ -83,7 +86,7 @@ class V2RayConfig:
 
 
 def remove_duplicates(configs):
-    """Remove duplicate configurations"""
+    """Remove duplicate configurations while preserving original strings"""
     unique_configs = set()
     result = []
     
@@ -98,16 +101,75 @@ def remove_duplicates(configs):
 
 
 def tcp_ping(host, port, timeout=5):
-    """Test TCP connectivity to host:port"""
+    """Test TCP connectivity to host:port and return connection time in ms or False on failure"""
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(timeout)
+        start_time = time.time()
         result = sock.connect_ex((host, port))
+        elapsed_time = (time.time() - start_time) * 1000  # Convert to ms
         sock.close()
-        return result == 0
+        if result == 0:
+            return elapsed_time
+        return False
     except Exception as e:
         logger.debug(f"TCP ping error for {host}:{port} - {str(e)}")
         return False
+
+
+def udp_ping(host, port, timeout=5):
+    """Test UDP connectivity to host:port"""
+    try:
+        # Create a UDP socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(timeout)
+        
+        # Send a dummy packet
+        message = b'ping'
+        sock.sendto(message, (host, port))
+        
+        # Try to receive a response
+        try:
+            data, addr = sock.recvfrom(1024)
+            sock.close()
+            return True
+        except socket.timeout:
+            # In UDP we can't know for sure if the port is open
+            # We'll assume it's ok if we don't get an error from sending
+            sock.close()
+            return True
+    except Exception as e:
+        logger.debug(f"UDP ping error for {host}:{port} - {str(e)}")
+        return False
+
+
+def get_ip_info():
+    """Get IN (local) and OUT (public) IP addresses"""
+    in_ip = None
+    out_ip = None
+    
+    # Get IN IP (local IP)
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        in_ip = s.getsockname()[0]
+        s.close()
+    except Exception as e:
+        logger.error(f"Error getting local IP: {e}")
+        return None, None
+    
+    # Get OUT IP (public IP)
+    try:
+        cmd = ["curl", "-s", "https://api.ipify.org"]
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, stderr = process.communicate(timeout=10)
+        if process.returncode == 0:
+            out_ip = stdout.decode().strip()
+    except Exception as e:
+        logger.error(f"Error getting public IP: {e}")
+        return None, None
+    
+    return in_ip, out_ip
 
 
 def test_tcp_connectivity(configs, max_workers=10):
@@ -124,8 +186,11 @@ def test_tcp_connectivity(configs, max_workers=10):
             logger.warning(f"Skipping unparseable config: {config[:30]}...")
             return None
         
-        if tcp_ping(v2ray_config.server, v2ray_config.port):
-            return config
+        ping_time = tcp_ping(v2ray_config.server, v2ray_config.port)
+        if ping_time:
+            v2ray_config.tcp_ping_time = ping_time
+            # Return original config string with V2RayConfig object
+            return config, v2ray_config
         return None
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -151,10 +216,8 @@ def test_url_connectivity(configs, max_workers=10):
     
     logger.info(f"Starting URL connectivity test for {total} configurations")
     
-    def worker(config):
-        v2ray_config = V2RayConfig(config)
-        if not v2ray_config.parsed:
-            return None
+    def worker(config_tuple):
+        config, v2ray_config = config_tuple
         
         try:
             # Simple HTTP request to check if IP is accessible
@@ -166,7 +229,7 @@ def test_url_connectivity(configs, max_workers=10):
             
             # We consider any response (even an error HTTP code) as a sign that the server is reachable
             if process.returncode == 0 or stdout.decode().strip():
-                return config
+                return config_tuple
             return None
         except subprocess.TimeoutExpired:
             process.kill()
@@ -176,7 +239,7 @@ def test_url_connectivity(configs, max_workers=10):
             return None
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(worker, config) for config in configs]
+        futures = [executor.submit(worker, config_tuple) for config_tuple in configs]
         for future in futures:
             try:
                 res = future.result()
@@ -188,6 +251,67 @@ def test_url_connectivity(configs, max_workers=10):
     
     logger.info(f"URL connectivity test completed: {success}/{total} configurations passed")
     return result
+
+
+def final_test(configs, max_workers=10):
+    """Perform final tests (TCP ping, UDP ping, and IP determination)"""
+    result = []
+    total = len(configs)
+    success = 0
+    
+    logger.info(f"Starting final tests for {total} configurations")
+    
+    def worker(config_tuple):
+        config, v2ray_config = config_tuple
+        errors = 0
+        
+        # 1. TCP ping (again)
+        tcp_ping_result = tcp_ping(v2ray_config.server, v2ray_config.port)
+        if tcp_ping_result:
+            v2ray_config.tcp_ping_time = tcp_ping_result  # Update ping time
+        else:
+            errors += 1
+            logger.debug(f"TCP ping failed for {v2ray_config.server}:{v2ray_config.port}")
+        
+        # 2. UDP ping
+        udp_ping_result = udp_ping(v2ray_config.server, v2ray_config.port)
+        if not udp_ping_result:
+            errors += 1
+            logger.debug(f"UDP ping failed for {v2ray_config.server}:{v2ray_config.port}")
+        
+        # 3. Determine IN and OUT IP
+        in_ip, out_ip = get_ip_info()
+        if in_ip and out_ip:
+            v2ray_config.in_ip = in_ip
+            v2ray_config.out_ip = out_ip
+        else:
+            errors += 1
+            logger.debug(f"IP determination failed")
+        
+        # 4. If any errors, discard the configuration
+        if errors > 0:
+            return None
+        
+        return config, v2ray_config
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(worker, config_tuple) for config_tuple in configs]
+        for future in futures:
+            try:
+                res = future.result()
+                if res:
+                    result.append(res)
+                    success += 1
+            except Exception as e:
+                logger.error(f"Error in final test: {e}")
+    
+    logger.info(f"Final tests completed: {success}/{total} configurations passed")
+    
+    # 5. Sort by TCP ping time but keep original configs
+    result.sort(key=lambda x: x[1].tcp_ping_time)
+    
+    # Return only the ORIGINAL config strings, preserving all details
+    return [config for config, _ in result]
 
 
 def main():
@@ -207,7 +331,7 @@ def main():
         configs = remove_duplicates(configs)
         logger.info(f"After removing duplicates: {len(configs)} configurations")
         
-        # Step 2: TCP ping test
+        # Step 2: TCP ping test with V2RayConfig objects
         configs = test_tcp_connectivity(configs)
         logger.info(f"After TCP ping test: {len(configs)} configurations")
         
@@ -215,7 +339,11 @@ def main():
         configs = test_url_connectivity(configs)
         logger.info(f"After URL connectivity test: {len(configs)} configurations")
         
-        # Write results to output file
+        # Step 4: Final test with sorting
+        configs = final_test(configs)
+        logger.info(f"After final tests: {len(configs)} configurations")
+        
+        # Write results to output file - original configurations only
         with open(output_file, 'w') as f:
             for config in configs:
                 f.write(f"{config}\n")
