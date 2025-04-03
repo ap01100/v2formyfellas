@@ -1,0 +1,230 @@
+#!/usr/bin/env python3
+
+import os
+import re
+import subprocess
+import json
+import base64
+import time
+import logging
+import urllib.parse
+import socket
+import threading
+import queue
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import urlparse, parse_qs
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("v2ray_filter.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("v2ray_filter")
+
+class V2RayConfig:
+    def __init__(self, config_str):
+        self.config_str = config_str.strip()
+        self.protocol = self.config_str.split('://')[0] if '://' in self.config_str else None
+        self.server = None
+        self.port = None
+        self.parsed = False
+        self.parse_config()
+    
+    def parse_config(self):
+        try:
+            if self.protocol == 'vless' or self.protocol == 'trojan':
+                # Extract server and port from vless/trojan URL
+                match = re.search(r'@([^:]+):(\d+)', self.config_str)
+                if match:
+                    self.server = match.group(1)
+                    self.port = int(match.group(2))
+                    self.parsed = True
+            elif self.protocol == 'vmess':
+                # Extract and decode vmess config
+                base64_part = self.config_str.split('://')[1]
+                decoded = base64.b64decode(base64_part).decode('utf-8')
+                config_json = json.loads(decoded)
+                self.server = config_json.get('add')
+                self.port = int(config_json.get('port'))
+                self.parsed = True
+            elif self.protocol == 'ss':
+                # Extract and decode shadowsocks config
+                base64_part = self.config_str.split('://')[1].split('#')[0]
+                if '@' in base64_part:
+                    # Format: ss://base64(method:password)@server:port
+                    server_part = base64_part.split('@')[1]
+                    self.server = server_part.split(':')[0]
+                    self.port = int(server_part.split(':')[1])
+                else:
+                    # Format: ss://base64(method:password@server:port)
+                    decoded = base64.b64decode(base64_part).decode('utf-8')
+                    parts = decoded.split('@')
+                    if len(parts) > 1:
+                        server_part = parts[1]
+                        self.server = server_part.split(':')[0]
+                        self.port = int(server_part.split(':')[1])
+                self.parsed = True
+        except Exception as e:
+            logger.error(f"Error parsing config: {e}")
+            self.parsed = False
+
+    def __eq__(self, other):
+        if not isinstance(other, V2RayConfig):
+            return False
+        return self.config_str == other.config_str
+
+    def __hash__(self):
+        return hash(self.config_str)
+
+
+def remove_duplicates(configs):
+    """Remove duplicate configurations"""
+    unique_configs = set()
+    result = []
+    
+    for config in configs:
+        v2ray_config = V2RayConfig(config)
+        if v2ray_config.parsed and config not in unique_configs:
+            unique_configs.add(config)
+            result.append(config)
+    
+    logger.info(f"Removed duplicates: {len(configs) - len(result)} duplicates found")
+    return result
+
+
+def tcp_ping(host, port, timeout=5):
+    """Test TCP connectivity to host:port"""
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        result = sock.connect_ex((host, port))
+        sock.close()
+        return result == 0
+    except Exception as e:
+        logger.debug(f"TCP ping error for {host}:{port} - {str(e)}")
+        return False
+
+
+def test_tcp_connectivity(configs, max_workers=10):
+    """Test TCP connectivity for all configurations"""
+    result = []
+    total = len(configs)
+    success = 0
+    
+    logger.info(f"Starting TCP connectivity test for {total} configurations")
+    
+    def worker(config):
+        v2ray_config = V2RayConfig(config)
+        if not v2ray_config.parsed:
+            logger.warning(f"Skipping unparseable config: {config[:30]}...")
+            return None
+        
+        if tcp_ping(v2ray_config.server, v2ray_config.port):
+            return config
+        return None
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(worker, config) for config in configs]
+        for future in futures:
+            try:
+                res = future.result()
+                if res:
+                    result.append(res)
+                    success += 1
+            except Exception as e:
+                logger.error(f"Error in TCP connectivity test: {e}")
+    
+    logger.info(f"TCP connectivity test completed: {success}/{total} configurations passed")
+    return result
+
+
+def test_url_connectivity(configs, max_workers=10):
+    """Test URL connectivity for all configurations"""
+    result = []
+    total = len(configs)
+    success = 0
+    
+    logger.info(f"Starting URL connectivity test for {total} configurations")
+    
+    def worker(config):
+        v2ray_config = V2RayConfig(config)
+        if not v2ray_config.parsed:
+            return None
+        
+        try:
+            # Simple HTTP request to check if IP is accessible
+            cmd = ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", 
+                   "--connect-timeout", "5", f"http://{v2ray_config.server}:{v2ray_config.port}"]
+            
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdout, stderr = process.communicate(timeout=10)
+            
+            # We consider any response (even an error HTTP code) as a sign that the server is reachable
+            if process.returncode == 0 or stdout.decode().strip():
+                return config
+            return None
+        except subprocess.TimeoutExpired:
+            process.kill()
+            return None
+        except Exception as e:
+            logger.debug(f"URL test error for {v2ray_config.server}:{v2ray_config.port} - {str(e)}")
+            return None
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(worker, config) for config in configs]
+        for future in futures:
+            try:
+                res = future.result()
+                if res:
+                    result.append(res)
+                    success += 1
+            except Exception as e:
+                logger.error(f"Error in URL connectivity test: {e}")
+    
+    logger.info(f"URL connectivity test completed: {success}/{total} configurations passed")
+    return result
+
+
+def main():
+    input_file = "input_configs.txt"
+    output_file = "output_configs.txt"
+    
+    logger.info("Starting V2Ray configuration filtering process")
+    
+    # Read configurations
+    try:
+        with open(input_file, 'r') as f:
+            configs = [line.strip() for line in f if line.strip()]
+        
+        logger.info(f"Read {len(configs)} configurations from {input_file}")
+        
+        # Step 1: Remove duplicates
+        configs = remove_duplicates(configs)
+        logger.info(f"After removing duplicates: {len(configs)} configurations")
+        
+        # Step 2: TCP ping test
+        configs = test_tcp_connectivity(configs)
+        logger.info(f"After TCP ping test: {len(configs)} configurations")
+        
+        # Step 3: URL connectivity test
+        configs = test_url_connectivity(configs)
+        logger.info(f"After URL connectivity test: {len(configs)} configurations")
+        
+        # Write results to output file
+        with open(output_file, 'w') as f:
+            for config in configs:
+                f.write(f"{config}\n")
+        
+        logger.info(f"Successfully wrote {len(configs)} valid configurations to {output_file}")
+    
+    except Exception as e:
+        logger.error(f"An error occurred: {e}")
+
+
+if __name__ == "__main__":
+    main()
