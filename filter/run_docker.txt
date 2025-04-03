@@ -1,0 +1,1 @@
+sudo docker run --network=host -v $(pwd):/app v2ray_filter
