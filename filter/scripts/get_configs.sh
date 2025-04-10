@@ -13,7 +13,7 @@ do
   output_file="configs${i}.txt"
 
   # Скачиваем файл, отбрасываем строки, начинающиеся с #, и записываем в выходной файл
-  curl -s "$url" | grep -v '^#' > "$output_file"
+  curl -s "$url" | grep -v '^#' > ../"$output_file"
 
   # Выводим сообщение о завершении обработки текущего файла
   echo "Processed $url and saved to $output_file"
