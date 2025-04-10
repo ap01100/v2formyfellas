@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # advanced_test.py
 # Этап 2: Углубленное тестирование прокси-конфигураций
 
@@ -56,7 +57,8 @@ def cleanup_process(process: Optional[subprocess.Popen], verbose: bool = False):
     if process:
         stdout, stderr = "", ""
         try:
-            stdout_bytes, stderr_bytes = process.communicate(timeout=1) # Уменьшен таймаут чтения после завершения
+            # Пытаемся прочитать остатки вывода после завершения
+            stdout_bytes, stderr_bytes = process.communicate(timeout=1)
             stdout = stdout_bytes.decode('utf-8', errors='replace') if stdout_bytes else ""
             stderr = stderr_bytes.decode('utf-8', errors='replace') if stderr_bytes else ""
             if verbose and (stdout or stderr):
@@ -65,6 +67,7 @@ def cleanup_process(process: Optional[subprocess.Popen], verbose: bool = False):
              logging.warning(f"Таймаут при чтении вывода завершенного процесса {process.pid}")
         except Exception as e:
              logging.error(f"Ошибка при чтении вывода процесса {process.pid}: {e}")
+
 
 def cleanup_file(filepath: Optional[str]):
     """Удаляет временный файл."""
@@ -76,8 +79,7 @@ def cleanup_file(filepath: Optional[str]):
             logging.error(f"Ошибка при удалении файла {filepath}: {e}")
 
 # --- Парсеры конфигураций (Скопированы из url_test.py) ---
-# (Нужны для get_inbound_ip и convert_to_singbox_config)
-
+# ... (код парсеров остается без изменений) ...
 def parse_ss_config(config_str: str) -> Dict[str, Any]:
     """Парсит конфигурацию Shadowsocks (ss://)."""
     parsed = urllib.parse.urlparse(config_str)
@@ -251,7 +253,7 @@ def parse_vless_config(config_str: str) -> Dict[str, Any]:
     return outbound
 
 # --- Конвертер Конфигурации (Скопирован из url_test.py) ---
-
+# ... (код конвертера остается без изменений) ...
 def convert_to_singbox_config(config_str: str, socks_port: int, log_level: str = "warn") -> Dict[str, Any]:
     """Конвертирует строку конфигурации в формат JSON для sing-box."""
     base_config = {
@@ -283,8 +285,8 @@ def convert_to_singbox_config(config_str: str, socks_port: int, log_level: str =
         raise ValueError(f"Неподдерживаемый или некорректный протокол: {config_str[:40]}...")
 
     base_config["outbounds"].append(parsed_outbound)
-    base_config["outbounds"].append({"type": "direct", "tag": "direct"})
-    base_config["outbounds"].append({"type": "block", "tag": "block"})
+    base_config["outbounds"].append({"type": "direct", "tag": "direct"}) # Оставляем direct
+    # base_config["outbounds"].append({"type": "block", "tag": "block"}) # Убрали block
     base_config["route"] = {
         "rules": [{"protocol": ["dns"], "outbound": parsed_outbound["tag"]}, {"outbound": parsed_outbound["tag"]}],
         "final": parsed_outbound["tag"]
@@ -311,6 +313,7 @@ def tcp_ping_latency_test(
 ) -> Tuple[bool, Optional[float], Optional[str]]:
     """
     Выполняет TCP-пинг и измеряет задержку до target_host:target_port через прокси.
+    Использует netcat (nc) для теста.
     Возвращает (success, latency_ms, error_message).
     """
     log_prefix = f"TCP [{config_str[:25]}... -> {target_host}:{target_port}]"
@@ -319,7 +322,6 @@ def tcp_ping_latency_test(
     socks_port: Optional[int] = None
     config_file: Optional[str] = None
     proxy_process: Optional[subprocess.Popen] = None
-    conn_socket: Optional[socket.socket] = None # Сокет для TCP соединения
 
     try:
         # 1. Найти порт и сгенерировать конфиг sing-box
@@ -335,9 +337,9 @@ def tcp_ping_latency_test(
 
         # 3. Запустить sing-box
         cmd = [singbox_path, "run", "-c", config_file]
+        # Используем Popen для асинхронного запуска
         proxy_process = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            encoding='utf-8', errors='replace'
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
         )
 
         # 4. Дождаться запуска sing-box (проверка порта)
@@ -348,88 +350,85 @@ def tcp_ping_latency_test(
             if proxy_process.poll() is not None: # Процесс завершился
                  stderr_output = ""
                  try:
+                     # Читаем вывод завершенного процесса
                      _, stderr_bytes = proxy_process.communicate(timeout=1)
-                     stderr_output = stderr_bytes[:500]
-                 except Exception: pass
-                 error_msg = f"Sing-box не запустился (код {proxy_process.poll()}). stderr: {stderr_output}"
+                     stderr_output = stderr_bytes.decode('utf-8', errors='replace')[:500] # Ограничиваем длину
+                 except Exception: pass # Игнорируем ошибки чтения, т.к. процесс уже упал
+                 error_msg = f"Sing-box не запустился (код {proxy_process.poll()}). Stderr: {stderr_output}"
                  logging.warning(f"{log_prefix} {error_msg}")
                  return False, None, error_msg
             try:
+                # Проверяем, слушается ли порт
                 with socket.create_connection(("127.0.0.1", socks_port), timeout=0.1):
                     port_ready = True
                     logging.debug(f"{log_prefix} Порт {socks_port} готов за {time.time() - start_wait:.2f} сек.")
                     break
             except (socket.timeout, ConnectionRefusedError):
-                time.sleep(0.2)
+                time.sleep(0.2) # Ждем немного перед следующей проверкой
             except Exception as e:
-                logging.warning(f"{log_prefix} Ошибка проверки порта {socks_port}: {e}")
-                time.sleep(0.3)
+                 logging.warning(f"{log_prefix} Ошибка проверки порта {socks_port}: {e}")
+                 time.sleep(0.3)
 
         if not port_ready:
             error_msg = f"Таймаут ({max_wait_time} сек) ожидания sing-box на порту {socks_port}"
             logging.warning(f"{log_prefix} {error_msg}")
+            # Попытаемся завершить процесс, если он еще работает
+            cleanup_process(proxy_process, verbose)
             return False, None, error_msg
 
-        # 5. Попытка TCP-соединения через прокси
+        # 5. Попытка TCP-соединения через прокси с помощью netcat (nc)
         start_time = time.time()
         try:
-            # Создаем сокет
-            conn_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            conn_socket.settimeout(timeout)
-
-            # Устанавливаем SOCKS5 прокси (используем socks5h для DNS через прокси)
-            # Важно: библиотека PySocks не является стандартной.
-            # Вместо нее, сделаем простой SOCKS5 handshake вручную или через curl/socat.
-            # Проще всего использовать curl для этой цели.
-
-            curl_cmd = [
-                "curl",
-                "--silent",  # Тихий режим
-                "--output", "/dev/null", # Не выводить тело ответа
-                "--head", # Получать только заголовки (быстрее для проверки соединения)
-                "--connect-timeout", str(int(timeout)), # Таймаут соединения
-                "--max-time", str(int(timeout) + 2), # Общий таймаут
-                "--socks5-hostname", f"127.0.0.1:{socks_port}", # Прокси
-                 # Целевой адрес - используем http для простоты TCP теста через curl
-                 # Можно использовать telnet/nc, если доступны
-                f"http://{target_host}:{target_port}" # Используем http как протокол для curl
+            # Конвертируем таймаут в целое число секунд для nc -w
+            nc_timeout_sec = max(1, int(timeout))
+            # Команда netcat для проверки TCP соединения через SOCKS5
+            # -z : Режим сканирования (только проверка соединения)
+            # -X 5 : Использовать SOCKS версии 5
+            # -x proxy_addr:port : Адрес SOCKS прокси
+            # -w timeout : Таймаут соединения в секундах
+            nc_cmd = [
+                "nc", "-z",
+                "-X", "5",
+                "-x", f"127.0.0.1:{socks_port}",
+                "-w", str(nc_timeout_sec),
+                target_host,
+                str(target_port)
             ]
-            # Для чистого TCP теста лучше использовать netcat (nc) или socat, если они доступны
-            # Пример с nc:
-            # echo | nc -X 5 -x 127.0.0.1:{socks_port} -w {timeout} {target_host} {target_port}
-            # Проверка кода возврата nc даст результат пинга. Задержку так измерить сложнее.
 
-            logging.debug(f"{log_prefix} Запуск curl для TCP теста: {' '.join(curl_cmd)}")
-            ping_process = subprocess.run(curl_cmd, capture_output=True, timeout=timeout + 3)
+            logging.debug(f"{log_prefix} Запуск nc для TCP теста: {' '.join(nc_cmd)}")
+            # Используем subprocess.run, т.к. nc -z быстро завершается
+            ping_process = subprocess.run(
+                nc_cmd,
+                capture_output=True,
+                timeout=nc_timeout_sec + 2 # Добавляем запас времени на выполнение самой команды nc
+            )
             end_time = time.time()
             latency = (end_time - start_time) * 1000 # в мс
 
             if ping_process.returncode == 0:
-                logging.debug(f"{log_prefix} Успешное соединение (через curl), задержка: {latency:.0f}ms")
+                logging.debug(f"{log_prefix} Успешное соединение (через nc -z), задержка (прибл.): {latency:.0f}ms")
                 return True, round(latency), None
             else:
-                 # Анализируем ошибку curl
-                 curl_error = ping_process.stderr.decode('utf-8', errors='replace').strip()
-                 error_msg = f"TCP Тест через curl не удался (код {ping_process.returncode}). Ошибка: {curl_error[:100]}"
+                 # Анализируем ошибку nc
+                 nc_error = ping_process.stderr.decode('utf-8', errors='replace').strip()
+                 # Часто nc не пишет много в stderr при ошибках -z, код возврата важнее
+                 error_msg = f"TCP Тест через nc не удался (код {ping_process.returncode}). Ошибка: {nc_error[:100]}"
                  logging.warning(f"{log_prefix} {error_msg}")
                  return False, None, error_msg
 
         except subprocess.TimeoutExpired:
-            error_msg = f"Таймаут ({timeout} сек) TCP соединения через curl"
+            error_msg = f"Таймаут ({nc_timeout_sec + 2} сек) выполнения команды nc"
             logging.warning(f"{log_prefix} {error_msg}")
             return False, None, error_msg
         except FileNotFoundError:
-            error_msg = "Команда 'curl' не найдена. TCP тест не выполнен."
-            logging.error(f"{log_prefix} {error_msg}")
+            error_msg = "Команда 'nc' (netcat) не найдена. TCP тест не выполнен."
+            logging.error(f"{log_prefix} {error_msg}") # Это критическая ошибка для функции
             return False, None, error_msg
         except Exception as e:
-            error_msg = f"Ошибка TCP соединения: {type(e).__name__}: {str(e)[:100]}"
+            error_msg = f"Ошибка выполнения nc или TCP соединения: {type(e).__name__}: {str(e)[:100]}"
             logging.warning(f"{log_prefix} {error_msg}")
             return False, None, error_msg
-        finally:
-            if conn_socket:
-                try: conn_socket.close()
-                except Exception: pass
+        # finally для nc не нужен, т.к. nc -z сам закрывает соединение
 
     except ValueError as e: # Ошибка парсинга/конвертации
         error_msg = f"Ошибка подготовки: {e}"
@@ -440,7 +439,7 @@ def tcp_ping_latency_test(
         logging.error(f"{log_prefix} {error_msg}", exc_info=verbose)
         return False, None, error_msg
     finally:
-        # Очистка
+        # Очистка: завершить sing-box и удалить временный конфиг
         logging.debug(f"{log_prefix} Очистка ресурсов TCP теста...")
         cleanup_process(proxy_process, verbose)
         cleanup_file(config_file)
@@ -464,8 +463,8 @@ def get_inbound_ip(config_str: str) -> Optional[str]:
                     logging.debug(f"{log_prefix} Найден Inbound IP: {in_ip}")
                     return str(in_ip) # Убедимся, что это строка
                 else:
-                    logging.warning(f"{log_prefix} Поле 'server' не найдено в распарсенном конфиге.")
-                    return None
+                     logging.warning(f"{log_prefix} Поле 'server' не найдено в распарсенном конфиге.")
+                     return None
         logging.warning(f"{log_prefix} Не удалось распознать протокол для извлечения IP.")
         return None
     except Exception as e:
@@ -490,12 +489,12 @@ def get_outbound_ip(
     socks_port: Optional[int] = None
     config_file: Optional[str] = None
     proxy_process: Optional[subprocess.Popen] = None
-    session = None
+    session = None # Для requests
 
     try:
         # 1. Подготовка: порт, конфиг, запуск sing-box (аналогично TCP тесту)
         socks_port = find_free_port()
-        local_proxy = f"socks5h://127.0.0.1:{socks_port}"
+        local_proxy = f"socks5h://127.0.0.1:{socks_port}" # Используем socks5h для DNS через прокси
         log_level = "debug" if verbose else "warn"
         singbox_config = convert_to_singbox_config(config_str, socks_port, log_level)
 
@@ -506,8 +505,7 @@ def get_outbound_ip(
 
         cmd = [singbox_path, "run", "-c", config_file]
         proxy_process = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            encoding='utf-8', errors='replace'
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
         )
 
         # Ожидание запуска sing-box
@@ -517,13 +515,13 @@ def get_outbound_ip(
         while time.time() - start_wait < max_wait_time:
              if proxy_process.poll() is not None:
                  stderr_output = ""
-                 try: _, stderr_bytes = proxy_process.communicate(timeout=1); stderr_output = stderr_bytes[:500]
+                 try: _, stderr_bytes = proxy_process.communicate(timeout=1); stderr_output = stderr_bytes.decode('utf-8', errors='replace')[:500]
                  except Exception: pass
-                 error_msg = f"Sing-box не запустился (код {proxy_process.poll()}). stderr: {stderr_output}"
+                 error_msg = f"Sing-box не запустился (код {proxy_process.poll()}). Stderr: {stderr_output}"
                  logging.warning(f"{log_prefix} {error_msg}")
                  return None, error_msg
              try:
-                with socket.create_connection(("127.0.0.1", socks_port), timeout=0.1):
+                 with socket.create_connection(("127.0.0.1", socks_port), timeout=0.1):
                     port_ready = True
                     logging.debug(f"{log_prefix} Порт {socks_port} готов за {time.time() - start_wait:.2f} сек.")
                     break
@@ -533,18 +531,21 @@ def get_outbound_ip(
         if not port_ready:
             error_msg = f"Таймаут ({max_wait_time} сек) ожидания sing-box на порту {socks_port}"
             logging.warning(f"{log_prefix} {error_msg}")
+            cleanup_process(proxy_process, verbose) # Завершаем процесс
             return None, error_msg
 
         # 2. Выполнить запрос к IP-сервису через прокси
         try:
-            import requests # Импортируем здесь, чтобы ошибка импорта была обработана
+            # Импортируем requests здесь, чтобы ошибка импорта была обработана ниже
+            import requests
             session = requests.Session()
             session.proxies = {"http": local_proxy, "https": local_proxy}
+            # Добавляем User-Agent, некоторые сервисы могут его требовать
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'}
 
             logging.debug(f"{log_prefix} Выполнение GET запроса к {ip_service_url} через {local_proxy}...")
             response = session.get(ip_service_url, timeout=timeout, headers=headers)
-            response.raise_for_status() # Проверка на HTTP ошибки
+            response.raise_for_status() # Проверка на HTTP ошибки (4xx, 5xx)
 
             ip_data = response.json()
             outbound_ip = ip_data.get("ip")
@@ -567,36 +568,40 @@ def get_outbound_ip(
              logging.warning(f"{log_prefix} {error_msg}")
              return None, error_msg
         except requests.exceptions.ProxyError as e:
+            # Ошибка SOCKS (например, sing-box упал или не может подключиться дальше)
             error_msg = f"Ошибка прокси при запросе к IP сервису: {str(e)[:150]}"
             logging.warning(f"{log_prefix} {error_msg}")
             return None, error_msg
         except requests.exceptions.RequestException as e:
+             # Другие ошибки requests (DNS, Connection Error и т.д.)
              error_msg = f"Ошибка запроса к IP сервису: {type(e).__name__} - {str(e)[:150]}"
              logging.warning(f"{log_prefix} {error_msg}")
              return None, error_msg
         except json.JSONDecodeError:
+            # Сервис вернул не JSON
             error_msg = f"Ошибка декодирования JSON ответа от IP сервиса: {response.text[:100]}"
             logging.warning(f"{log_prefix} {error_msg}")
             return None, error_msg
         except Exception as e:
+            # Неожиданная ошибка
             error_msg = f"Неожиданная ошибка при запросе к IP сервису: {type(e).__name__}: {str(e)[:100]}"
             logging.error(f"{log_prefix} {error_msg}", exc_info=verbose)
             return None, error_msg
         finally:
             if session:
-                try: session.close()
+                try: session.close() # Закрываем сессию requests
                 except Exception: pass
 
     except ValueError as e: # Ошибка парсинга/конвертации
         error_msg = f"Ошибка подготовки: {e}"
         logging.error(f"{log_prefix} {error_msg}")
         return None, error_msg
-    except Exception as e: # Общие ошибки
+    except Exception as e: # Общие ошибки (запуск sing-box, запись файла)
         error_msg = f"Общая ошибка Outbound IP теста: {type(e).__name__}: {str(e)[:100]}"
         logging.error(f"{log_prefix} {error_msg}", exc_info=verbose)
         return None, error_msg
     finally:
-        # Очистка
+        # Очистка: завершить sing-box и удалить временный конфиг
         logging.debug(f"{log_prefix} Очистка ресурсов Outbound IP теста...")
         cleanup_process(proxy_process, verbose)
         cleanup_file(config_file)
@@ -646,7 +651,7 @@ def perform_advanced_test(
         results["error"] = f"TCP Тест: {tcp_error or 'Неизвестная ошибка'}"
         logging.warning(f"{log_prefix} {results['error']}")
         # Если TCP тест не прошел, нет смысла делать Outbound IP тест
-        logging.info(f"{log_prefix} НЕУДАЧА (TCP)")
+        logging.info(f"{log_prefix} -> Финальный статус: НЕУДАЧА ({results['error']})")
         return results # Возвращаем результат без Outbound IP теста
 
     # 3. Определить Outbound IP
@@ -658,12 +663,12 @@ def perform_advanced_test(
         results["error"] = f"Outbound IP Тест: {ip_error or 'Неизвестная ошибка'}"
         logging.warning(f"{log_prefix} {results['error']}")
         # Если Outbound IP не получен, считаем тест неудачным
-        logging.info(f"{log_prefix} НЕУДАЧА (Outbound IP)")
+        logging.info(f"{log_prefix} -> Финальный статус: НЕУДАЧА ({results['error']})")
         return results
 
     # 4. Если все тесты пройдены
     results["overall_success"] = True
-    logging.info(f"{log_prefix} УСПЕХ (TCP Latency: {tcp_latency}ms, Outbound IP: {outbound_ip})")
+    logging.info(f"{log_prefix} -> Финальный статус: УСПЕХ (TCP Latency: {tcp_latency}ms, Outbound IP: {outbound_ip})")
     return results
 
 # --- Основная функция ---
@@ -749,42 +754,79 @@ def main():
         logging.error("Пожалуйста, установите его командой: pip install requests")
         sys.exit(1)
 
-    # Проверка наличия curl (необходим для tcp_ping_latency_test)
+    # --- ИЗМЕНЕНО: Проверка наличия nc (netcat) ---
     try:
-        subprocess.run(["curl", "--version"], check=True, capture_output=True)
-        logging.debug("Команда 'curl' найдена.")
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        logging.error("КРИТИЧЕСКАЯ ОШИБКА: Команда 'curl' не найдена или не работает.")
-        logging.error("Установите curl (например, 'sudo apt update && sudo apt install curl' на Debian/Ubuntu).")
+        # Пытаемся запустить nc с опцией -h (help), чтобы проверить его наличие и работоспособность
+        # Используем check=True, чтобы вызвать исключение при ошибке
+        process = subprocess.run(["nc", "-h"], check=True, capture_output=True, timeout=5)
+        # Некоторые версии nc могут выводить help в stderr
+        output = (process.stdout or b'') + (process.stderr or b'')
+        if b'usage:' in output.lower() or b'openssl' in output.lower() or b'proxy' in output.lower():
+             logging.debug("Команда 'nc' (netcat) найдена и работает.")
+        else:
+             # Если вывод help не похож на стандартный, возможно это не та утилита
+             logging.warning("Команда 'nc' найдена, но вывод '-h' выглядит необычно. Убедитесь, что это netcat.")
+    except FileNotFoundError:
+        logging.error("КРИТИЧЕСКАЯ ОШИБКА: Команда 'nc' (netcat) не найдена.")
+        logging.error("Установите netcat (например, 'sudo apt update && sudo apt install netcat-traditional' или 'netcat-openbsd' на Debian/Ubuntu, или 'nmap-ncat' если используете ncat).")
         sys.exit(1)
-
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        logging.error(f"КРИТИЧЕСКАЯ ОШИБКА: Команда 'nc' найдена, но не работает корректно: {e}")
+        sys.exit(1)
+    except Exception as e:
+         logging.error(f"КРИТИЧЕСКАЯ ОШИБКА: Неожиданная ошибка при проверке 'nc': {e}")
+         sys.exit(1)
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     # Чтение конфигураций из временного файла
     configs_to_test = []
     try:
-        logging.info(f"Чтение конфигураций из файла: {args.input_file}")
+        logging.info(f"Чтение конфигураций из JSON файла: {args.input_file}")
         with open(args.input_file, 'r', encoding='utf-8') as f:
+            # Используем json.load для чтения списка из файла
             configs_to_test = json.load(f)
+
+        # Проверка, что прочитан именно список
         if not isinstance(configs_to_test, list):
-             raise ValueError("Формат JSON некорректен, ожидался список строк.")
+             raise ValueError("Формат JSON некорректен, ожидался список (массив) строк.")
+
+        # Дополнительная проверка и очистка: оставляем только непустые строки
+        original_count = len(configs_to_test)
+        configs_to_test = [str(config).strip() for config in configs_to_test if isinstance(config, str) and str(config).strip()]
+        if len(configs_to_test) != original_count:
+            logging.warning(f"Обнаружены и удалены некорректные или пустые записи из входного файла {args.input_file}.")
+
         if not configs_to_test:
-             logging.warning(f"Входной файл '{args.input_file}' пуст. Тестировать нечего.")
+             logging.warning(f"Входной файл '{args.input_file}' пуст или не содержит валидных конфигураций после очистки.")
              # Создаем пустой выходной файл и выходим
              args.output_file.parent.mkdir(parents=True, exist_ok=True)
              with open(args.output_file, 'w', encoding='utf-8') as f_out:
-                 pass
+                 pass # Просто создаем/очищаем файл
              logging.info(f"Создан пустой финальный файл результатов: {args.output_file}")
              sys.exit(0)
-        logging.info(f"Загружено {len(configs_to_test)} конфигураций для углубленного тестирования.")
+
+        logging.info(f"Загружено {len(configs_to_test)} конфигураций для углубленного тестирования из {args.input_file}.")
+
     except FileNotFoundError:
         logging.error(f"КРИТИЧЕСКАЯ ОШИБКА: Входной файл не найден: {args.input_file}")
         sys.exit(1)
-    except json.JSONDecodeError:
-        logging.error(f"КРИТИЧЕСКАЯ ОШИБКА: Ошибка декодирования JSON из файла: {args.input_file}")
+    except json.JSONDecodeError as e:
+        logging.error(f"КРИТИЧЕСКАЯ ОШИБКА: Ошибка декодирования JSON из файла {args.input_file}: {e}")
+        # Попробуем прочитать первые несколько строк для диагностики
+        try:
+            with open(args.input_file, 'r', encoding='utf-8') as f_err:
+                lines = [f_err.readline().strip() for _ in range(5)]
+            logging.error(f"Начало файла:\n" + "\n".join(lines))
+        except Exception:
+            pass # Не удалось прочитать начало файла
         sys.exit(1)
-    except Exception as e:
-        logging.error(f"Ошибка чтения или обработки входного файла {args.input_file}: {e}")
+    except ValueError as e: # Ошибка типа данных после json.load
+        logging.error(f"КРИТИЧЕСКАЯ ОШИБКА: Некорректные данные в JSON файле {args.input_file}: {e}")
         sys.exit(1)
+    except Exception as e: # Другие возможные ошибки чтения файла
+        logging.error(f"Неожиданная ошибка чтения или обработки входного файла {args.input_file}: {e}")
+        sys.exit(1)
+
 
     # Список для окончательно рабочих конфигураций
     final_working_configs = []
@@ -794,6 +836,7 @@ def main():
     logging.info(f"Начало углубленного тестирования ({args.workers} потоков)...")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
+        # Создаем задачи для каждой конфигурации
         future_to_config = {
             executor.submit(
                 perform_advanced_test,
@@ -809,29 +852,36 @@ def main():
             for config in configs_to_test
         }
 
-        for i, future in enumerate(concurrent.futures.as_completed(future_to_config), 1):
+        # Обрабатываем результаты по мере их поступления
+        processed_count = 0
+        for future in concurrent.futures.as_completed(future_to_config):
             original_config_str = future_to_config[future]
+            processed_count += 1
             try:
-                result_dict = future.result()
+                result_dict = future.result() # Получаем результат выполнения perform_advanced_test
 
-                # Логируем прогресс (кратко, т.к. детали в perform_advanced_test)
-                status_msg = "УСПЕХ" if result_dict['overall_success'] else "НЕУДАЧА"
-                error_summary = f" ({result_dict['error']})" if not result_dict['overall_success'] and result_dict.get('error') else ""
-                logging.info(f"({i}/{total_configs}) [{original_config_str[:25]}...] -> Финальный статус: {status_msg}{error_summary}")
-
+                # Логирование уже происходит внутри perform_advanced_test
+                # Просто добавляем рабочую конфигурацию в список
                 if result_dict['overall_success']:
                     final_working_configs.append(original_config_str)
+                # Логируем прогресс (опционально, т.к. детали уже залогированы)
+                # status_msg = "УСПЕХ" if result_dict['overall_success'] else "НЕУДАЧА"
+                # logging.info(f"({processed_count}/{total_configs}) [{original_config_str[:25]}...] -> Обработан: {status_msg}")
 
             except Exception as e:
-                logging.error(f"({i}/{total_configs}) КРИТИЧЕСКАЯ ОШИБКА обработки результата для {original_config_str[:30]}...: {e}", exc_info=args.verbose)
+                # Эта ошибка ловит исключения, возникшие *внутри* ThreadPoolExecutor
+                # или при получении результата future.result()
+                logging.error(f"({processed_count}/{total_configs}) КРИТИЧЕСКАЯ ОШИБКА обработки результата для {original_config_str[:30]}...: {e}", exc_info=args.verbose)
 
     end_time_total = time.time()
     duration = end_time_total - start_time_total
     num_successful = len(final_working_configs)
     num_failed = total_configs - num_successful
 
+    logging.info("-" * 30)
     logging.info(f"Углубленное тестирование завершено за {duration:.2f} секунд.")
-    logging.info(f"Итог углубленного теста: {num_successful} конфигураций прошли, {num_failed} не прошли.")
+    logging.info(f"Итог: {num_successful} прошли | {num_failed} не прошли | Всего: {total_configs}")
+    logging.info("-" * 30)
 
     # Запись окончательно рабочих конфигураций в выходной файл
     try:
@@ -841,11 +891,11 @@ def main():
         with open(args.output_file, 'w', encoding='utf-8') as f_out:
             if final_working_configs:
                 for config in final_working_configs:
-                    f_out.write(config + '\n')
+                     f_out.write(config + '\n')
             else:
                  # Если список пуст, все равно создаем/перезаписываем файл как пустой
-                 pass
-        logging.info(f"Файл '{args.output_file}' успешно записан.")
+                 pass # Файл будет создан/очищен при открытии 'w'
+        logging.info(f"Файл '{args.output_file}' успешно записан ({num_successful} строк).")
     except Exception as e:
         logging.error(f"Ошибка записи в выходной файл {args.output_file}: {e}")
         sys.exit(1)

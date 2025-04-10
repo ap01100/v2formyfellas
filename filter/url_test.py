@@ -38,14 +38,12 @@ def find_free_port() -> int:
 
 def cleanup_process(process: Optional[subprocess.Popen], verbose: bool = False):
     """Аккуратно завершает процесс и читает его вывод."""
-    # [Source 2]
-    if process and process.poll() is None: # Проверяем, что процесс еще жив
+    if process and process.poll() is None:
         logging.debug(f"Завершение процесса {process.pid}...")
         try:
             process.terminate()
-            process.wait(timeout=2) # Даем время на завершение
+            process.wait(timeout=2)
             logging.debug(f"Процесс {process.pid} завершен через terminate.")
-        # [Source 3]
         except subprocess.TimeoutExpired:
             logging.warning(f"Процесс {process.pid} не завершился за 2 сек, отправка kill...")
             process.kill()
@@ -54,21 +52,18 @@ def cleanup_process(process: Optional[subprocess.Popen], verbose: bool = False):
         except Exception as e:
             logging.error(f"Ошибка при попытке завершить процесс {process.pid}: {e}")
 
-    # [Source 4] Попытка прочитать остатки вывода, чтобы избежать блокировок
     if process:
-        stdout, stderr = "", ""
         try:
-            # Используем communicate для безопасного чтения без блокировок
-            # Увеличим таймаут на всякий случай
-            stdout_bytes, stderr_bytes = process.communicate(timeout=2)
-            stdout = stdout_bytes.decode('utf-8', errors='replace') if stdout_bytes else ""
-            stderr = stderr_bytes.decode('utf-8', errors='replace') if stderr_bytes else ""
+            # Без text=True вывод уже является строкой
+            stdout, stderr = process.communicate(timeout=2)
+            stdout = stdout if stdout else ""
+            stderr = stderr if stderr else ""
             if verbose and (stdout or stderr):
-                 logging.debug(f"Вывод процесса {process.pid} при завершении:\nSTDOUT:\n{stdout[:500]}\nSTDERR:\n{stderr[:500]}") # [Source 5]
+                logging.debug(f"Вывод процесса {process.pid} при завершении:\nSTDOUT:\n{stdout[:500]}\nSTDERR:\n{stderr[:500]}")
         except subprocess.TimeoutExpired:
-             logging.warning(f"Таймаут при чтении вывода завершенного процесса {process.pid}")
+            logging.warning(f"Таймаут при чтении вывода завершенного процесса {process.pid}")
         except Exception as e:
-             logging.error(f"Ошибка при чтении вывода процесса {process.pid}: {e}")
+            logging.error(f"Ошибка при чтении вывода процесса {process.pid}: {e}")
 
 def cleanup_file(filepath: Optional[str]):
     """Удаляет временный файл."""
@@ -346,11 +341,13 @@ def convert_to_singbox_config(config_str: str, socks_port: int) -> Dict[str, Any
     if not parsed_outbound:
         raise ValueError(f"Неподдерживаемый или некорректный протокол: {config_str[:40]}...")
 
-    # [Source 30] Добавляем основной outbound и прямой/блочный для полноты
+    # [Source 30] Добавляем основной outbound и direct
     base_config["outbounds"].append(parsed_outbound)
-    # Добавим также direct и block для более сложных правил (хотя здесь не используются)
+    # "direct" нужен для DNS detour, даже если его определение считается устаревшим
     base_config["outbounds"].append({"type": "direct", "tag": "direct"})
-    base_config["outbounds"].append({"type": "block", "tag": "block"})
+    # "block" пока оставляем закомментированным, т.к. он не вызывал фатальной ошибки
+    # base_config["outbounds"].append({"type": "block", "tag":
+# [Source 84] # "block"})
 
 
     # Добавляем простое правило маршрутизации: все через наш outbound
@@ -502,14 +499,16 @@ def perform_url_test(config_str: str, test_url: str, timeout: float, singbox_pat
                 logging.error(f"{log_prefix} Процесс sing-box ({proxy_process.pid}) неожиданно завершился с кодом {return_code} во время ожидания порта.")
                 # [Source 44] Читаем stderr для диагностики
                 try:
-                     # Читаем остатки вывода
-                    stdout_bytes, stderr_bytes = proxy_process.communicate(timeout=1)
-                    stderr_output = stderr_bytes.decode('utf-8', errors='replace') if stderr_bytes else ""
-                    singbox_error_output = stderr_output[:1000] # Ограничиваем объем
+                     # Читаем остатки вывода (stdout и stderr уже строки из-за text=True)
+                    stdout_str, stderr_str = proxy_process.communicate(timeout=1)
+                    # Просто присваиваем строку stderr, декодирование не нужно
+                    singbox_error_output = stderr_str[:1000] if stderr_str else "" # Ограничиваем объем
                     # [Source 45]
                     logging.error(f"{log_prefix} STDERR sing-box:\n{singbox_error_output}")
                 except Exception as e:
-                    logging.error(f"{log_prefix} Не удалось прочитать stderr sing-box после ошибки: {e}")
+                    # Сообщение об ошибке можно оставить тем же или уточнить
+                    logging.error(f"{log_prefix} Ошибка при чтении вывода sing-box после его завершения: {e}")
+                    # [Source 106] (строка изменена)
                 result["error"] = f"Sing-box не запустился (код {return_code}). См. логи для STDERR." # [Source 46]
                 cleanup_file(config_file) # Процесс уже завершен
                 return result
