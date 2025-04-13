@@ -20,7 +20,7 @@ from typing import List, Dict, Tuple, Optional, Any
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Constants ---
-DEFAULT_TEST_URL = "https://www.google.com/generate_204"
+DEFAULT_TEST_URL = "http://cp.cloudflare.com"
 DEFAULT_TIMEOUT = 10
 DEFAULT_WORKERS = 5
 SINGBOX_EXECUTABLE = "sing-box" # Предполагаем, что sing-box в PATH или указываем полный путь
