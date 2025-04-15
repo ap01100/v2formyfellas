@@ -1,20 +1,21 @@
-trojan://bpb-trojan@104.26.5.60:443?security=tls&sni=zamim340.ggff.net&type=ws&host=zamim340.ggff.net&path=%2Ftr%3Fed%3D2560#🔒 TR-WS-TLS 🏴‍☠️ NA-104.26.5.60:443
-trojan://bpb-trojan@172.67.70.92:443?security=tls&sni=zamim340.ggff.net&type=ws&host=zamim340.ggff.net&path=%2Ftr%3Fed%3D2560#🔒 TR-WS-TLS 🏴‍☠️ NA-172.67.70.92:443
-trojan://02926f9e-153a-42c8-8ecd-8fade7009ad1@166.0.198.68:443?security=tls&sni=golinkwuxian.top&type=ws&host=222.golinkwuxian.top&path=%2Fapple&allowInsecure=1#🔒 TR-WS-TLS 🇹🇼 TW-166.0.198.68:443
-trojan://I46LpSIM1f@194.164.57.9:1935?security=tls&sni=x4ger-ionos.devefun.net&type=tcp&alpn=h3%2Ch2%2Chttp%2F1.1#🔒 TR-TCP-TLS 🇩🇪 DE-194.164.57.9:1935
-trojan://74260698218909400@109.107.159.122:443?security=tls&sni=electric-mallard.shiner427.skin&type=tcp#🔒 TR-TCP-TLS 🇬🇧 GB-109.107.159.122:443
-trojan://FiSo7J6vfS@51.68.13.106:1935?security=tls&sni=x1fr-ovh.devefun.net&type=tcp#🔒 TR-TCP-TLS 🇫🇷 FR-51.68.13.106:1935
-trojan://oIwjHDXpKePvYIg8@43.161.255.183:443?sni=myvps.lol&allowInsecure=0#🔒 TR-TCP-NA 🇭🇰 HK-43.161.255.183:443
-trojan://utF6JLQd2x@141.227.128.69:1935?security=tls&sni=x1es-ovh.devefun.net&type=tcp&allowInsecure=1#🔒 TR-TCP-TLS 🇪🇸 ES-141.227.128.69:1935
-trojan://hZ7JkYVAfB@141.227.138.29:1935?security=tls&sni=x1ch-ovh.devefun.net&type=tcp&alpn=h3%2Ch2%2Chttp%2F1.1#🔒 TR-TCP-TLS 🇫🇷 FR-141.227.138.29:1935
-trojan://cf49ce10-17ed-11f0-99f9-1239d0255272@51.38.65.155:443?security=tls&sni=tgju.org&type=tcp&allowInsecure=1#🔒 TR-TCP-TLS 🇬🇧 GB-51.38.65.155:443
-trojan://auto@104.21.35.43:443?security=tls&sni=esetsecuritylicense3.wawafec355.workers.dev&type=ws&host=esetsecuritylicense3.wawafec355.workers.dev&path=%2F#🔒 TR-WS-TLS 🏴‍☠️ NA-104.21.35.43:443
-trojan://74260698218909400@85.234.65.11:443?sni=happy-bluebird.shiner427.skin&allowInsecure=1#🔒 TR-TCP-NA 🇳🇱 NL-85.234.65.11:443
+trojan://74260698218909400@109.107.159.124:443?security=tls&sni=ample-warthog.shiner427.skin&type=tcp#🔒 TR-TCP-TLS 🇬🇧 GB-109.107.159.124:443
 trojan://AXpQXM4vNh@141.227.160.167:1935?security=tls&sni=x2swe-ovh.devefun.net&type=tcp&alpn=h3%2Ch2%2Chttp%2F1.1#🔒 TR-TCP-TLS 🇫🇷 FR-141.227.160.167:1935
-trojan://trojan@104.18.3.150:443?security=tls&sni=main.xicun.us.kg&type=ws&host=main.xicun.us.kg#🔒 TR-WS-TLS 🏴‍☠️ NA-104.18.3.150:443
-trojan://eG92F3gh09@51.15.86.181:1935?security=tls&sni=x1ams-scaleway.devefun.net&type=tcp&alpn=h3%2Ch2%2Chttp%2F1.1#🔒 TR-TCP-TLS 🇫🇷 FR-51.15.86.181:1935
-trojan://auto@104.21.48.61:443?security=tls&sni=nameless-term-9c25.vpnconnect202020.workers.dev&type=ws&host=nameless-term-9c25.vpnconnect202020.workers.dev&path=%2F%3Fed%3D2560#🔒 TR-WS-TLS 🏴‍☠️ NA-104.21.48.61:443
-trojan://b19c4375-d847-4c40-9824-4767c88b5f38@80.225.222.181:10230?security=tls&sni=www.hk-jd.top#🔒 TR-TCP-TLS 🇮🇳 IN-80.225.222.181:10230
+trojan://89c1aea7-4d0d-4013-b663-0f94a3e6bdbd@172.67.204.75:443?security=tls&sni=sanjose01.818185.xyz&type=ws&host=sanjose01.818185.xyz&path=%2FT5yZBrY2Qkg2cThJQeJb&fp=chrome&alpn=http%2F1.1#🔒 TR-WS-TLS 🏴‍☠️ NA-172.67.204.75:443
+trojan://I46LpSIM1f@194.164.57.9:1935?security=tls&sni=x4ger-ionos.devefun.net&type=tcp&alpn=h3%2Ch2%2Chttp%2F1.1#🔒 TR-TCP-TLS 🇩🇪 DE-194.164.57.9:1935
+trojan://bpb-trojan@104.26.4.60:443?security=tls&sni=zamim340.ggff.net&type=ws&host=zamim340.ggff.net&path=%2Ftr%3Fed%3D2560#🔒 TR-WS-TLS 🏴‍☠️ NA-104.26.4.60:443
+trojan://89c1aea7-4d0d-4013-b663-0f94a3e6bdbd@104.21.58.135:443?security=tls&sni=sanjose01.818185.xyz&type=ws&host=sanjose01.818185.xyz&path=/T5yZBrY2Qkg2cThJQeJb&fp=chrome&alpn=http/1.1#🔒 TR-WS-TLS 🏴‍☠️ NA-104.21.58.135:443
+trojan://bpb-trojan@162.159.153.2:443?security=tls&sni=zamim340.ggff.net&type=ws&host=zamim340.ggff.net&path=%2Ftr%3Fed%3D2560#🔒 TR-WS-TLS 🏴‍☠️ NA-162.159.153.2:443
+trojan://hZ7JkYVAfB@141.227.138.29:1935?sni=x1ch-ovh.devefun.net&allowInsecure=1#🔒 TR-TCP-NA 🇫🇷 FR-141.227.138.29:1935
+trojan://FiSo7J6vfS@51.68.13.106:1935?security=tls&sni=x1fr-ovh.devefun.net&type=tcp&alpn=h3%2Ch2%2Chttp%2F1.1#🔒 TR-TCP-TLS 🇫🇷 FR-51.68.13.106:1935
 trojan://74260698218909400@85.234.83.133:443?security=tls&sni=smooth-imp.shiner427.skin&type=tcp#🔒 TR-TCP-TLS 🇯🇵 JP-85.234.83.133:443
-trojan://t2WqbIW2JE@15.204.175.111:2083?security=tls&sni=usa-vp-111.mETIkaPPs.cOm&type=ws&host=usa-vp-111.mETIkaPPs.cOm&path=/linkvws#🔒 TR-WS-TLS 🇺🇸 US-15.204.175.111:2083
+trojan://89c1aea7-4d0d-4013-b663-0f94a3e6bdbd@172.67.210.210:443?sni=sanjose02.852224.ggff.net&type=ws&host=sanjose02.852224.ggff.net&path=/T5yZBrY2Qkg2cThJQeJb&allowInsecure=0#🔒 TR-WS-NA 🏴‍☠️ NA-172.67.210.210:443
+trojan://4467ae8518abf1ef321618c0bfb5549ccc@152.69.175.39:25131?security=tls&sni=www.cloudflare.com&type=tcp&allowInsecure=1#🔒 TR-TCP-TLS 🇦🇺 AU-152.69.175.39:25131
+trojan://utF6JLQd2x@141.227.128.69:1935?security=tls&sni=x1es-ovh.devefun.net&type=tcp&alpn=h3%2Ch2%2Chttp%2F1.1#🔒 TR-TCP-TLS 🇪🇸 ES-141.227.128.69:1935
+trojan://4467ae8518abf1ef321618c0bfb5549ccc@129.151.163.120:25131?sni=www.cloudflare.com&allowInsecure=1#🔒 TR-TCP-NA 🇿🇦 ZA-129.151.163.120:25131
+trojan://eG92F3gh09@51.15.86.181:1935?security=tls&sni=x1ams-scaleway.devefun.net&type=tcp#🔒 TR-TCP-TLS 🇫🇷 FR-51.15.86.181:1935
+trojan://dQUWbcwECl@20.191.138.47:443?security=tls&sni=automq4-proxy.automq-sg.com&allowInsecure=1#🔒 TR-TCP-TLS 🇸🇬 SG-20.191.138.47:443
 trojan://oIwjHDXpKePvYIg8@43.167.160.4:443?sni=myvps.cfd&allowInsecure=1#🔒 TR-TCP-NA 🇯🇵 JP-43.167.160.4:443
+trojan://89c1aea7-4d0d-4013-b663-0f94a3e6bdbd@104.21.23.115:443?security=tls&sni=sanjose06.852224.ggff.net&type=ws&host=sanjose06.852224.ggff.net&path=%2FT5yZBrY2Qkg2cThJQeJb&fp=chrome&alpn=http%2F1.1#🔒 TR-WS-TLS 🏴‍☠️ NA-104.21.23.115:443
+trojan://74260698218909400@202.78.163.116:443?security=tls&sni=patient-crawdad.shiner427.skin&type=tcp#🔒 TR-TCP-TLS 🇩🇪 DE-202.78.163.116:443
+trojan://AzFNJQt8t3@15.204.9.249:2083?sni=usA-Vp-249.MeTIkAppS.coM&type=ws&host=usA-Vp-249.MeTIkAppS.coM&path=/linkws#🔒 TR-WS-NA 🇺🇸 US-15.204.9.249:2083
+trojan://dQUWbcwECl@74.176.59.185:443?security=tls&sni=automq3-proxy.automq-sg.com&type=tcp#🔒 TR-TCP-TLS 🇯🇵 JP-74.176.59.185:443
