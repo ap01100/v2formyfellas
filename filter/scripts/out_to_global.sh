@@ -1,5 +1,3 @@
-cat ../output/output1.txt > ../../configs.txt
-for i in {2..10}
-do
-  cat ../output/output${i}.txt >> ../../configs.txt
-done
+cat ../workfiles/barry-far_all.txt > ../../configs.txt
+cat ../workfiles/epodonios_all.txt > ../../epodonios_all.txt
+echo "Rewritten all prod configs"
