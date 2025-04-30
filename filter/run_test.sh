@@ -9,29 +9,18 @@ set -euo pipefail
 
 # --- Конфигурация ---
 # Определяем переменные для URL, имен файлов и путей, чтобы легко их менять.
-readonly WORK_DIR="workfiles"         # Рабочая директория для временных файлов
-readonly DEST_DIR=".."                # Директория назначения для финальных конфигов
+WORK_DIR="workfiles"
+RAW_FILE="${WORK_DIR}/raw.txt"
+TEMP_URL_FILE="${WORK_DIR}/url_tested.txt"
+TESTED_FILE="tested.txt"
 
 # Источники конфигураций
-declare -A SOURCES=(
-    ["epodonios"]="https://raw.githubusercontent.com/Epodonios/v2ray-configs/refs/heads/main/All_Configs_Sub.txt"
-    ["barry-far"]="https://raw.githubusercontent.com/barry-far/V2ray-Configs/refs/heads/main/All_Configs_Sub.txt"
-)
+BARRY_FAR_URL="https://raw.githubusercontent.com/barry-far/V2ray-Configs/refs/heads/main/All_Configs_Sub.txt"
+EPODONIOS_URL="https://raw.githubusercontent.com/Epodonios/v2ray-configs/refs/heads/main/All_Configs_Sub.txt"
 
-# Имена файлов (исходные, протестированные, финальные)
-readonly EPODONIOS_RAW_FILE="${WORK_DIR}/epodonios_all_raw.txt"
-readonly EPODONIOS_TESTED_FILE="${WORK_DIR}/epodonios_all_tested.txt"
-readonly EPODONIOS_DEST_FILE="${DEST_DIR}/epodonios_all.txt"
-
-readonly BARRYFAR_RAW_FILE="${WORK_DIR}/barry-far_all_raw.txt"
-readonly BARRYFAR_TESTED_FILE="${WORK_DIR}/barry-far_all_tested.txt"
-readonly BARRYFAR_DEST_FILE="${DEST_DIR}/configs.txt" # Имя файла назначения для barry-far
-
-# Настройки для теста URL
-readonly PYTHON_CMD="python3"
-readonly URL_TEST_SCRIPT="url_test.py"
-readonly SINGBOX_PATH="/usr/local/bin/sing-box"
-readonly URL_TEST_WORKERS="10"
+# Настройки
+SINGBOX_PATH="/usr/local/bin/sing-box"
+WORKERS=10
 
 # --- Функции ---
 
@@ -152,32 +141,58 @@ fi
 if ask_user "Обновить конфиги из удаленных источников?"; then
     echo "Пользователь выбрал обновить конфиги."
     # Скачиваем оба набора конфигов
-    download_and_filter "${SOURCES[epodonios]}" "$EPODONIOS_RAW_FILE" "epodonios"
-    download_and_filter "${SOURCES[barry-far]}" "$BARRYFAR_RAW_FILE" "barry-far"
+    download_and_filter "$BARRY_FAR_URL" "$RAW_FILE" "barry-far"
+    download_and_filter "$EPODONIOS_URL" "$RAW_FILE" "epodonios"
 else
     echo "Пользователь выбрал не обновлять конфиги. Используются существующие файлы в ${WORK_DIR} (если они есть)."
     # Можно добавить проверку на существование файлов, если не обновляем
-    if [[ ! -f "$EPODONIOS_RAW_FILE" || ! -f "$BARRYFAR_RAW_FILE" ]]; then
-         echo "   ПРЕДУПРЕЖДЕНИЕ: Один или оба файла с сырыми конфигами не найдены в ${WORK_DIR}. Тестирование может не сработать." >&2
+    if [[ ! -f "$RAW_FILE" ]]; then
+         echo "   ПРЕДУПРЕЖДЕНИЕ: Файл с сырыми конфигами не найден в ${WORK_DIR}. Тестирование может не сработать." >&2
     fi
 fi
 
-# Запускаем тесты для обоих наборов конфигов (используем _raw файлы как входные, _tested как выходные)
-run_test "$BARRYFAR_RAW_FILE" "$BARRYFAR_TESTED_FILE" "barry-far"
-run_test "$EPODONIOS_RAW_FILE" "$EPODONIOS_TESTED_FILE" "epodonios"
+# Загрузка и объединение конфигураций в один файл
+curl -fsSL "$BARRY_FAR_URL" > "$RAW_FILE" || echo "Предупреждение: Ошибка загрузки barry-far"
+curl -fsSL "$EPODONIOS_URL" >> "$RAW_FILE" || echo "Предупреждение: Ошибка загрузки epodonios"
 
-echo "---------------------------------------------"
-
-# Спрашиваем, нужно ли перемещать (копировать) протестированные конфиги
-if ask_user "Переместить (скопировать) протестированные конфиги в публичную директорию (${DEST_DIR})?"; then
-    echo "Пользователь согласился переместить файлы."
-    move_configs "$BARRYFAR_TESTED_FILE" "$BARRYFAR_DEST_FILE" "barry-far"
-    move_configs "$EPODONIOS_TESTED_FILE" "$EPODONIOS_DEST_FILE" "epodonios"
-else
-    echo "Пользователь отказался. Протестированные файлы остаются в ${WORK_DIR} (${BARRYFAR_TESTED_FILE}, ${EPODONIOS_TESTED_FILE})."
+# Проверка, что файл не пустой
+if [ ! -s "$RAW_FILE" ]; then
+    echo "Ошибка: Не удалось загрузить конфигурации. Файл пустой."
+    exit 1
 fi
 
-echo "---------------------------------------------"
-echo "Скрипт завершен."
+# Фильтрация (оставляем только строки, начинающиеся с протоколов)
+grep -E "^(ss|vmess|trojan|vless)://" "$RAW_FILE" > "${RAW_FILE}.filtered" || true
+mv "${RAW_FILE}.filtered" "$RAW_FILE"
 
-exit 0 # Успешное завершение
+TOTAL_CONFIGS=$(wc -l < "$RAW_FILE")
+echo "Загружено $TOTAL_CONFIGS конфигураций"
+
+echo
+echo "====== Тестирование конфигураций ======"
+echo "Запуск тестирования URL с последующим расширенным тестированием..."
+
+# Запуск тестирования с помощью main.py
+python3 main.py "$RAW_FILE" \
+    --url-then-advanced \
+    --temp-file "$TEMP_URL_FILE" \
+    -o "$TESTED_FILE" \
+    --singbox-path "$SINGBOX_PATH" \
+    -w "$WORKERS" \
+    --advanced-workers "$WORKERS" \
+    || { echo "Ошибка при тестировании конфигураций"; exit 1; }
+
+# Результаты
+if [ -f "$TESTED_FILE" ]; then
+    WORKING_CONFIGS=$(wc -l < "$TESTED_FILE")
+    SUCCESS_RATE=$(awk "BEGIN { printf \"%.1f\", ($WORKING_CONFIGS/$TOTAL_CONFIGS)*100 }")
+    echo
+    echo "====== Результаты ======"
+    echo "Из $TOTAL_CONFIGS конфигураций работают: $WORKING_CONFIGS ($SUCCESS_RATE%)"
+    echo "Результаты сохранены в $TESTED_FILE"
+else
+    echo "Предупреждение: Файл с результатами не создан"
+fi
+
+echo "Готово!"
+exit 0
