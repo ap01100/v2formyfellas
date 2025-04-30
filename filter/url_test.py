@@ -14,6 +14,8 @@ import re
 import sys # Добавлен импорт sys
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Any
+from contextlib import contextmanager
+import select
 
 # --- Logging Setup ---
 # Устанавливаем базовый уровень INFO, чтобы видеть прогресс без -v
@@ -26,8 +28,70 @@ DEFAULT_WORKERS = 5
 SINGBOX_EXECUTABLE = "sing-box" # Предполагаем, что sing-box в PATH или указываем полный путь
 #  Добавляем путь к скрипту advanced_test.py
 ADVANCED_TEST_SCRIPT = "advanced_test.py" # Предполагаем, что он в той же директории
+DEFAULT_SS_METHOD = "aes-256-gcm"  # Default method for Shadowsocks
+MAX_WAIT_TIME = 15  # Maximum time to wait for sing-box to start
+MAX_ERROR_OUTPUT_LEN = 1000  # Maximum length of error output to log
+SOCKET_CHECK_INTERVAL = 0.2  # Interval between socket connection checks
+USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36'
 
 # --- Вспомогательные функции ---
+
+def check_ubuntu_compatibility():
+    """Проверяет совместимость с Ubuntu 22.04."""
+    try:
+        with open('/etc/os-release', 'r') as f:
+            os_info = f.read()
+            if 'Ubuntu' in os_info:
+                if '22.04' in os_info:
+                    logging.debug("Detected Ubuntu 22.04 - compatible environment")
+                    return True
+                else:
+                    logging.warning("Running on Ubuntu, but not version 22.04. Some features may not work as expected.")
+                    return True
+    except Exception:
+        # Если не удается определить ОС, продолжаем выполнение
+        pass
+    
+    # Если это не Ubuntu, выводим предупреждение
+    logging.warning("Not running on Ubuntu 22.04. This script is optimized for Ubuntu 22.04, some features may not work as expected.")
+    return False
+
+def ensure_executable_permissions(file_path):
+    """Ensures the file has executable permissions (chmod +x)."""
+    if not os.path.exists(file_path):
+        return False
+    
+    try:
+        # Check if file is executable
+        if not os.access(file_path, os.X_OK):
+            logging.warning(f"File {file_path} is not executable. Attempting to add execute permission.")
+            os.chmod(file_path, os.stat(file_path).st_mode | 0o111)  # Add execute permission
+            if os.access(file_path, os.X_OK):
+                logging.info(f"Successfully added execute permission to {file_path}")
+                return True
+            else:
+                logging.error(f"Failed to make {file_path} executable")
+                return False
+        return True
+    except Exception as e:
+        logging.error(f"Error checking/setting permissions on {file_path}: {e}")
+        return False
+
+@contextmanager
+def create_temp_file(suffix=".json"):
+    """Creates a temporary file and ensures it's deleted after use."""
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=suffix, delete=False, encoding='utf-8') as tmp_file:
+            temp_path = tmp_file.name
+            yield tmp_file
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+                logging.debug(f"Temporary file removed: {temp_path}")
+            except Exception as e:
+                logging.error(f"Error deleting temporary file {temp_path}: {e}")
 
 def find_free_port() -> int:
     """Находит свободный TCP порт."""
@@ -38,7 +102,10 @@ def find_free_port() -> int:
 
 def cleanup_process(process: Optional[subprocess.Popen], verbose: bool = False):
     """Аккуратно завершает процесс и читает его вывод."""
-    if process and process.poll() is None:
+    if not process:
+        return
+        
+    if process.poll() is None:
         logging.debug(f"Завершение процесса {process.pid}...")
         try:
             process.terminate()
@@ -52,18 +119,17 @@ def cleanup_process(process: Optional[subprocess.Popen], verbose: bool = False):
         except Exception as e:
             logging.error(f"Ошибка при попытке завершить процесс {process.pid}: {e}")
 
-    if process:
-        try:
-            # Без text=True вывод уже является строкой
-            stdout, stderr = process.communicate(timeout=2)
-            stdout = stdout if stdout else ""
-            stderr = stderr if stderr else ""
-            if verbose and (stdout or stderr):
-                logging.debug(f"Вывод процесса {process.pid} при завершении:\nSTDOUT:\n{stdout[:500]}\nSTDERR:\n{stderr[:500]}")
-        except subprocess.TimeoutExpired:
-            logging.warning(f"Таймаут при чтении вывода завершенного процесса {process.pid}")
-        except Exception as e:
-            logging.error(f"Ошибка при чтении вывода процесса {process.pid}: {e}")
+    try:
+        # Без text=True вывод уже является строкой
+        stdout, stderr = process.communicate(timeout=2)
+        stdout = stdout if stdout else ""
+        stderr = stderr if stderr else ""
+        if verbose and (stdout or stderr):
+            logging.debug(f"Вывод процесса {process.pid} при завершении:\nSTDOUT:\n{stdout[:500]}\nSTDERR:\n{stderr[:500]}")
+    except subprocess.TimeoutExpired:
+        logging.warning(f"Таймаут при чтении вывода завершенного процесса {process.pid}")
+    except Exception as e:
+        logging.error(f"Ошибка при чтении вывода процесса {process.pid}: {e}")
 
 def cleanup_file(filepath: Optional[str]):
     """Удаляет временный файл."""
@@ -74,6 +140,27 @@ def cleanup_file(filepath: Optional[str]):
             logging.debug(f"Временный файл удален: {filepath}")
         except Exception as e:
             logging.error(f"Ошибка при удалении файла {filepath}: {e}")
+
+def wait_for_port(host: str, port: int, timeout: float = MAX_WAIT_TIME) -> bool:
+    """Ожидает доступности порта синхронно."""
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            with socket.create_connection((host, port), timeout=0.1):
+                logging.debug(f"Порт {port} готов за {time.time() - start_time:.2f} сек.")
+                return True
+        except (socket.timeout, ConnectionRefusedError):
+            time.sleep(SOCKET_CHECK_INTERVAL)
+        except Exception as e:
+            logging.error(f"Неожиданная ошибка при проверке порта {port}: {e}")
+            time.sleep(SOCKET_CHECK_INTERVAL * 1.5)
+    return False
+
+def is_process_running(process: Optional[subprocess.Popen]) -> bool:
+    """Проверяет, запущен ли процесс."""
+    if not process:
+        return False
+    return process.poll() is None
 
 # --- Парсеры конфигураций (оставлены без изменений) ---
 
@@ -104,7 +191,7 @@ def parse_ss_config(config_str: str) -> Dict[str, Any]:
             password = base64.urlsafe_b64decode(user_info_part + '===').decode('utf-8')
             # Метод нужно будет указать по умолчанию или извлечь иначе
             # 
-            method = "aes-256-gcm" # Пример! Установите здесь ваш дефолтный метод
+            method = DEFAULT_SS_METHOD # Пример! Установите здесь ваш дефолтный метод
             logging.warning(f"Метод не найден явно, использован метод по умолчанию: {method}")
         except Exception as inner_e:
              logging.error(f"Не удалось определить метод/пароль SS из '{user_info_part}'. Ошибка: {inner_e}")
@@ -410,12 +497,12 @@ def perform_url_test(config_str: str, test_url: str, timeout: float, singbox_pat
         "status_code": None,
         "error": None,
     }
-    # 
-    socks_port: Optional[int] = None
-    config_file: Optional[str] = None
-    proxy_process: Optional[subprocess.Popen] = None
-    session = None # Инициализируем session здесь
-
+    
+    socks_port = None
+    config_file = None
+    proxy_process = None
+    session = None
+    
     try:
         # 1. Найти свободный порт
         socks_port = find_free_port()
@@ -424,179 +511,234 @@ def perform_url_test(config_str: str, test_url: str, timeout: float, singbox_pat
 
         # 2. Сгенерировать конфиг sing-box
         try:
-            # 
             singbox_config = convert_to_singbox_config(config_str, socks_port)
-            # Устанавливаем уровень логов sing-box в зависимости от verbose
             singbox_config["log"]["level"] = "debug" if verbose else "warn"
-            if verbose: # Выводим конфиг только в verbose режиме
-                 logging.debug(f"{log_prefix} Сгенерированный конфиг sing-box:\n{json.dumps(singbox_config, indent=2)}")
+            if verbose:
+                logging.debug(f"{log_prefix} Сгенерированный конфиг sing-box:\n{json.dumps(singbox_config, indent=2)}")
         except ValueError as e:
             result["error"] = f"Ошибка конфигурации: {e}"
             logging.error(f"{log_prefix} {result['error']}")
-            # 
-            return result # Возвращаем ошибку, дальше не идем
+            return result
 
-        # 3. Записать конфиг во временный файл
-        config_file_handle = None
-        try:
-             # Используем NamedTemporaryFile с delete=False, чтобы получить имя
-             config_file_handle = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding='utf-8')
-             # 
-             config_file = config_file_handle.name
-             json.dump(singbox_config, config_file_handle, indent=2)
-             config_file_handle.close() # Закрываем файл, чтобы sing-box мог его прочитать
-             logging.debug(f"{log_prefix} Конфиг записан в {config_file}")
-        except Exception as e:
-             result["error"] = f"Ошибка записи временного конфига: {e}"
-             # 
-             logging.error(f"{log_prefix} {result['error']}")
-             if config_file_handle: # Пытаемся закрыть, если открыт
-                 try: config_file_handle.close()
-                 except: pass
-             cleanup_file(config_file) # Пытаемся удалить, если создан
-             return result
+        # 3. Записать конфиг во временный файл с использованием контекстного менеджера
+        with create_temp_file() as config_file_handle:
+            config_file = config_file_handle.name
+            json.dump(singbox_config, config_file_handle, indent=2)
+            config_file_handle.flush()  # Явно сбрасываем буфер
+            logging.debug(f"{log_prefix} Конфиг записан в {config_file}")
+            
+            # Проверяем, что файл конфигурации действительно существует и читаем
+            if not os.path.exists(config_file):
+                result["error"] = "Ошибка создания файла конфигурации sing-box"
+                logging.error(f"{log_prefix} {result['error']}")
+                return result
+                
+            if not os.access(config_file, os.R_OK):
+                result["error"] = f"Нет прав на чтение файла конфигурации: {config_file}"
+                logging.error(f"{log_prefix} {result['error']}")
+                return result
+            
+            # 4. Запустить sing-box
+            cmd = [singbox_path, "run", "-c", config_file]
+            logging.debug(f"{log_prefix} Запуск команды: {' '.join(cmd)}")
+            
+            try:
+                # Проверяем существование и исполняемость sing-box перед запуском
+                if not os.path.exists(singbox_path):
+                    result["error"] = f"Исполняемый файл sing-box не найден по пути: {singbox_path}"
+                    logging.error(f"{log_prefix} {result['error']}")
+                    return result
+                
+                if not os.access(singbox_path, os.X_OK):
+                    result["error"] = f"Исполняемый файл sing-box не имеет прав на выполнение: {singbox_path}"
+                    logging.error(f"{log_prefix} {result['error']}")
+                    return result
+                
+                # Запускаем процесс с перенаправлением вывода для более подробного логирования
+                proxy_process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding='utf-8',
+                    errors='replace',
+                    bufsize=1  # Построчная буферизация для быстрого получения вывода
+                )
+                
+                if not proxy_process or proxy_process.poll() is not None:
+                    result["error"] = "Процесс sing-box не был запущен или сразу завершился"
+                    logging.error(f"{log_prefix} {result['error']}")
+                    return result
+                    
+                logging.debug(f"{log_prefix} Процесс sing-box запущен, PID: {proxy_process.pid}")
+                
+            except FileNotFoundError:
+                result["error"] = f"Исполняемый файл sing-box не найден по пути: {singbox_path}"
+                logging.error(f"{log_prefix} {result['error']}")
+                return result
+            except PermissionError:
+                result["error"] = f"Нет прав на запуск sing-box: {singbox_path}"
+                logging.error(f"{log_prefix} {result['error']}")
+                return result
+            except Exception as e:
+                result["error"] = f"Не удалось запустить sing-box: {e}"
+                logging.error(f"{log_prefix} {result['error']}")
+                return result
 
-        # 4. Запустить sing-box
-        cmd = [singbox_path, "run", "-c", config_file]
-        logging.debug(f"{log_prefix} Запуск команды: {' '.join(cmd)}")
-        try:
-             # Используем Popen для асинхронного запуска
-             proxy_process = subprocess.Popen(
-                # 
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True, # Лучше не использовать text=True при чтении stderr ниже
-                # 
-                encoding='utf-8', # Явно указываем кодировку
-                errors='replace' # Заменяем ошибки декодирования
-                # bufsize=1 # Для более быстрого получения вывода (опционально)
-             )
-        except FileNotFoundError:
-             result["error"] = f"Исполняемый файл sing-box не найден по пути: {singbox_path}"
-             logging.error(f"{log_prefix} {result['error']}")
-             cleanup_file(config_file)
-             return result
-        except Exception as e:
-             # 
-             result["error"] = f"Не удалось запустить sing-box: {e}"
-             logging.error(f"{log_prefix} {result['error']}")
-             cleanup_file(config_file)
-             return result
-
-
-        # 5. Дождаться запуска sing-box (проверка порта и/или логов)
-        start_wait = time.time()
-        port_ready = False
-        # 
-        singbox_error_output = "" # Собираем stderr на случай ошибки старта
-        logging.debug(f"{log_prefix} Ожидание доступности порта {socks_port}...")
-        max_wait_time = 15 # Увеличим время ожидания старта
-        while time.time() - start_wait < max_wait_time:
+            # Небольшая задержка после запуска для инициализации sing-box
+            time.sleep(0.5)
+            
+            # 5. Дождаться запуска sing-box и доступности порта
+            logging.debug(f"{log_prefix} Ожидание доступности порта {socks_port}...")
+            
+            # Проверяем вывод процесса сразу после запуска
+            output_logs = ""
+            error_logs = ""
+            
+            if proxy_process.stdout:
+                try:
+                    # Проверяем, есть ли данные на stdout без блокировки
+                    readable, _, _ = select.select([proxy_process.stdout], [], [], 0.1)
+                    if readable:
+                        output_lines = proxy_process.stdout.readlines(10)  # Читаем максимум 10 строк
+                        output_logs = "".join(output_lines)
+                        if output_logs.strip():
+                            logging.debug(f"{log_prefix} Вывод sing-box при запуске:\n{output_logs}")
+                except Exception as e:
+                    logging.debug(f"{log_prefix} Ошибка при чтении stdout: {e}")
+            
+            if proxy_process.stderr:
+                try:
+                    readable, _, _ = select.select([proxy_process.stderr], [], [], 0.1)
+                    if readable:
+                        error_lines = proxy_process.stderr.readlines(10)
+                        error_logs = "".join(error_lines)
+                        if error_logs.strip():
+                            logging.debug(f"{log_prefix} Ошибки sing-box при запуске:\n{error_logs}")
+                except Exception as e:
+                    logging.debug(f"{log_prefix} Ошибка при чтении stderr: {e}")
+            
             # Проверяем, не завершился ли процесс с ошибкой
             return_code = proxy_process.poll()
             if return_code is not None:
-                logging.error(f"{log_prefix} Процесс sing-box ({proxy_process.pid}) неожиданно завершился с кодом {return_code} во время ожидания порта.")
-                #  Читаем stderr для диагностики
+                logging.error(f"{log_prefix} Процесс sing-box ({proxy_process.pid}) неожиданно завершился с кодом {return_code}.")
+                
                 try:
-                     # Читаем остатки вывода (stdout и stderr уже строки из-за text=True)
-                    stdout_str, stderr_str = proxy_process.communicate(timeout=1)
-                    # Просто присваиваем строку stderr, декодирование не нужно
-                    singbox_error_output = stderr_str[:1000] if stderr_str else "" # Ограничиваем объем
-                    # 
-                    logging.error(f"{log_prefix} STDERR sing-box:\n{singbox_error_output}")
+                    # Пытаемся получить оставшийся вывод
+                    remaining_stdout, remaining_stderr = proxy_process.communicate(timeout=1)
+                    if remaining_stdout:
+                        output_logs += remaining_stdout
+                    if remaining_stderr:
+                        error_logs += remaining_stderr
+                        
+                    # Логируем полный вывод ошибки
+                    if error_logs:
+                        logging.error(f"{log_prefix} STDERR sing-box:\n{error_logs[:MAX_ERROR_OUTPUT_LEN]}")
+                    if output_logs:
+                        logging.debug(f"{log_prefix} STDOUT sing-box:\n{output_logs[:MAX_ERROR_OUTPUT_LEN]}")
                 except Exception as e:
-                    # Сообщение об ошибке можно оставить тем же или уточнить
                     logging.error(f"{log_prefix} Ошибка при чтении вывода sing-box после его завершения: {e}")
-                    #  (строка изменена)
-                result["error"] = f"Sing-box не запустился (код {return_code}). См. логи для STDERR." # 
-                cleanup_file(config_file) # Процесс уже завершен
+                
+                result["error"] = f"Sing-box не запустился (код {return_code}). См. логи для STDERR."
+                
+                # Добавляем текст ошибки в сообщение, если он есть
+                if error_logs:
+                    result["error"] += f" Ошибка: {error_logs.strip()[:200]}"
+                    
+                return result
+            
+            # Ожидаем доступности порта
+            port_ready = wait_for_port("127.0.0.1", socks_port, MAX_WAIT_TIME)
+            
+            # Если порт не стал доступен, но процесс все еще запущен, попробуем получить больше информации
+            if not port_ready and is_process_running(proxy_process):
+                logging.warning(f"{log_prefix} Порт {socks_port} не стал доступным, но процесс sing-box ({proxy_process.pid}) все еще запущен.")
+                
+                # Получаем дополнительную информацию о состоянии сетевых подключений
+                try:
+                    # Проверяем открытые TCP-соединения с помощью системных команд
+                    netstat_cmd = ["ss", "-tnlp"]
+                    netstat_output = subprocess.check_output(netstat_cmd, universal_newlines=True, stderr=subprocess.DEVNULL)
+                    logging.debug(f"{log_prefix} Открытые TCP-соединения (ss -tnlp):\n{netstat_output}")
+                    
+                    # Проверяем, есть ли в выводе наш порт
+                    if f":{socks_port}" in netstat_output:
+                        logging.info(f"{log_prefix} Порт {socks_port} найден в списке открытых портов, но не отвечает на подключения.")
+                        # Портал найден, но подключение не удаётся. Попробуем предположить, что порт всё-таки готов
+                        port_ready = True
+                    else:
+                        logging.warning(f"{log_prefix} Порт {socks_port} НЕ найден в списке открытых портов.")
+                except Exception as e:
+                    logging.debug(f"{log_prefix} Ошибка при проверке сетевых подключений: {e}")
+                
+                # Если не удалось получить информацию о портах, пытаемся продолжить с тестом, если процесс запущен
+                if is_process_running(proxy_process):
+                    logging.warning(f"{log_prefix} Продолжаем тестирование, несмотря на проблемы с портом {socks_port}.")
+                    port_ready = True
+            
+            if not port_ready:
+                logging.error(f"{log_prefix} Таймаут ({MAX_WAIT_TIME} сек) ожидания sing-box на порту {socks_port}.")
+                result["error"] = f"Таймаут ожидания sing-box ({socks_port})"
+                cleanup_process(proxy_process, verbose)
                 return result
 
-            # Проверяем доступность порта
+            # 6. Выполнить HTTP-запрос через прокси
             try:
-                with socket.create_connection(("127.0.0.1", socks_port), timeout=0.1):
-                    # 
-                    port_ready = True
-                    logging.debug(f"{log_prefix} Порт {socks_port} готов за {time.time() - start_wait:.2f} сек.")
-                    break
-            except (socket.timeout, ConnectionRefusedError):
-                time.sleep(0.2) # Небольшая пауза перед следующей проверкой
-            # 
+                import requests
+                session = requests.Session()
+                session.proxies = {
+                    "http": local_proxy,
+                    "https": local_proxy
+                }
+
+                logging.debug(f"{log_prefix} Выполнение GET запроса к {test_url} через {local_proxy}...")
+                start_time = time.time()
+                headers = {'User-Agent': USER_AGENT}
+                
+                try:
+                    response = session.get(test_url, timeout=timeout, headers=headers, allow_redirects=True)
+                    latency = (time.time() - start_time) * 1000 # в мс
+
+                    # Проверяем статус код (2xx считается успехом)
+                    if 200 <= response.status_code < 300:
+                        result["success"] = True
+                        result["latency_ms"] = round(latency)
+                        result["status_code"] = response.status_code
+                        logging.info(f"{log_prefix} УСПЕХ - Задержка: {result['latency_ms']}ms, Статус: {result['status_code']}")
+                    else:
+                        result["error"] = f"Ошибка теста URL: Неожиданный статус-код {response.status_code}"
+                        logging.warning(f"{log_prefix} {result['error']}")
+                        result["status_code"] = response.status_code
+                except requests.exceptions.Timeout:
+                    result["error"] = f"Ошибка теста URL: Таймаут ({timeout} сек)"
+                    logging.warning(f"{log_prefix} {result['error']}")
+                except requests.exceptions.ProxyError as e:
+                    result["error"] = f"Ошибка теста URL: Ошибка прокси - {str(e)[:200]}"
+                    logging.warning(f"{log_prefix} {result['error']}")
+                except requests.exceptions.RequestException as e:
+                    result["error"] = f"Ошибка теста URL: {type(e).__name__} - {str(e)[:200]}"
+                    logging.warning(f"{log_prefix} {result['error']}")
+
             except Exception as e:
-                 logging.error(f"{log_prefix} Неожиданная ошибка при проверке порта {socks_port}: {e}")
-                 time.sleep(0.3)
-
-        if not port_ready:
-            logging.error(f"{log_prefix} Таймаут ({max_wait_time} сек) ожидания sing-box на порту {socks_port}.")
-            result["error"] = f"Таймаут ожидания sing-box ({socks_port})"
-            #  Завершаем процесс и читаем вывод для диагностики
-            cleanup_process(proxy_process, verbose) # Завершаем принудительно
-            cleanup_file(config_file)
-            return result
-
-        # 6. Выполнить HTTP-запрос через прокси
-        try:
-            #  Импортируем requests здесь, т.к. он проверяется в main
-            import requests
-            session = requests.Session()
-            session.proxies = {
-                "http": local_proxy,
-                "https": local_proxy
-            }
-
-            # 
-            logging.debug(f"{log_prefix} Выполнение GET запроса к {test_url} через {local_proxy}...")
-            start_time = time.time()
-            # Добавляем User-Agent для большей реалистичности
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36'}
-            response = session.get(test_url, timeout=timeout, headers=headers, allow_redirects=True) # Добавили allow_redirects
-            latency = (time.time() - start_time) * 1000 # в мс
-
-            # Проверяем статус код (2xx считается успехом)
-            if 200 <= response.status_code < 300:
-                 result["success"] = True
-                 result["latency_ms"] = round(latency)
-                 result["status_code"] = response.status_code
-                 #  Логируем успех на уровне INFO
-                 logging.info(f"{log_prefix} УСПЕХ - Задержка: {result['latency_ms']}ms, Статус: {result['status_code']}")
-            else:
-                result["error"] = f"Ошибка теста URL: Неожиданный статус-код {response.status_code}"
-                logging.warning(f"{log_prefix} {result['error']}")
-                result["status_code"] = response.status_code
-
-
-        except requests.exceptions.Timeout:
-             result["error"] = f"Ошибка теста URL: Таймаут ({timeout} сек)"
-             logging.warning(f"{log_prefix} {result['error']}")
-        except requests.exceptions.ProxyError as e:
-            # 
-            result["error"] = f"Ошибка теста URL: Ошибка прокси - {str(e)[:200]}"
-            logging.warning(f"{log_prefix} {result['error']}")
-        except requests.exceptions.RequestException as e:
-             result["error"] = f"Ошибка теста URL: {type(e).__name__} - {str(e)[:200]}"
-             logging.warning(f"{log_prefix} {result['error']}")
-        except Exception as e: # Ловим прочие возможные ошибки
-             # 
-             result["error"] = f"Неожиданная ошибка теста URL: {type(e).__name__}: {str(e)[:200]}"
-             logging.error(f"{log_prefix} {result['error']}", exc_info=verbose) # Показывать traceback в verbose
+                result["error"] = f"Неожиданная ошибка теста URL: {type(e).__name__}: {str(e)[:200]}"
+                logging.error(f"{log_prefix} {result['error']}", exc_info=verbose)
 
     except Exception as e:
-        # Ловим ошибки этапов 1-5 (поиск порта, генерация/запись конфига, запуск/ожидание sing-box)
         result["error"] = f"Общая ошибка подготовки теста: {type(e).__name__}: {str(e)[:200]}"
-        logging.error(f"{log_prefix} {result['error']}", exc_info=verbose) # Показывать traceback в verbose
+        logging.error(f"{log_prefix} {result['error']}", exc_info=verbose)
 
     finally:
         # 7. Закрыть сессию requests
-        # 
         if session:
-             try: session.close()
-             except: pass
-             logging.debug(f"{log_prefix} Сессия requests закрыта.")
-        # 8. Остановить sing-box и удалить файл
+            try:
+                session.close()
+            except:
+                pass
+            logging.debug(f"{log_prefix} Сессия requests закрыта.")
+        
+        # 8. Остановить sing-box
         logging.debug(f"{log_prefix} Очистка ресурсов...")
         cleanup_process(proxy_process, verbose)
-        cleanup_file(config_file)
         logging.debug(f"{log_prefix} Очистка завершена.")
 
     return result
@@ -604,25 +746,15 @@ def perform_url_test(config_str: str, test_url: str, timeout: float, singbox_pat
 # --- Основная функция ---
 
 def main():
-    # 
     parser = argparse.ArgumentParser(
         description="Этап 1: Параллельное URL-тестирование прокси-конфигураций (ss, vmess, vless, trojan) с использованием sing-box.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
-        )
+    )
     parser.add_argument(
         "input_file",
         type=Path,
         help="Путь к текстовому файлу со списком конфигураций URI (по одной на строку)."
-        )
-    #  Удален аргумент -o / --output_file
-    # parser.add_argument(
-    #     "-o", "--output_file",
-    #     type=Path,
-    #     required=True,
-    #     help="Путь к текстовому файлу для сохранения РАБОЧИХ конфигураций URI (по одной на строку)."
-    #     )
-
-    #  Добавлен аргумент для указания финального выходного файла (передается в advanced_test.py)
+    )
     parser.add_argument(
         "-ao", "--advanced-output",
         type=Path,
@@ -634,86 +766,143 @@ def main():
         type=int,
         default=DEFAULT_WORKERS,
         help="Количество параллельных потоков для тестирования."
-        ) # 
+    )
     parser.add_argument(
         "-u", "--url",
         type=str,
         default=DEFAULT_TEST_URL,
         help="URL для выполнения теста доступности через прокси."
-        )
+    )
     parser.add_argument(
         "-t", "--timeout",
         type=float,
         default=DEFAULT_TIMEOUT,
         help="Таймаут для URL теста в секундах."
-        ) # 
+    )
     parser.add_argument(
         "-s", "--singbox-path",
         type=str,
         default=SINGBOX_EXECUTABLE,
         help="Путь к исполняемому файлу sing-box."
-        )
+    )
     parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Включить подробное логирование (уровень DEBUG)."
-        )
+    )
 
     args = parser.parse_args()
 
-    #  Устанавливаем уровень логирования DEBUG, если указан флаг -v
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
         logging.debug("Включен режим подробного логирования (DEBUG).")
-        # Устанавливаем уровень логов sing-box (если нужно)
-        # logging.getLogger('sing-box').setLevel(logging.DEBUG) # Пример, если бы был логгер sing-box
 
-    # Обновляем глобальную переменную пути к sing-box
+    # Проверка совместимости с Ubuntu 22.04
+    check_ubuntu_compatibility()
+
     effective_singbox_path = args.singbox_path
+
+    # Проверка наличия и исполняемости sing-box
+    if not os.path.isabs(effective_singbox_path):
+        # Если путь не абсолютный, попробуем найти в PATH
+        from shutil import which
+        resolved_path = which(effective_singbox_path)
+        if resolved_path:
+            effective_singbox_path = resolved_path
+            logging.debug(f"Resolved sing-box path: {effective_singbox_path}")
+
+    # Проверка исполняемых прав
+    if os.path.exists(effective_singbox_path) and not ensure_executable_permissions(effective_singbox_path):
+        logging.warning(f"Could not set execute permissions on {effective_singbox_path}. You may need to run 'chmod +x {effective_singbox_path}' manually.")
 
     # Проверка наличия sing-box
     try:
         logging.debug(f"Проверка sing-box по пути: {effective_singbox_path}")
-        #  Используем capture_output=True чтобы скрыть вывод версии
-        process_result = subprocess.run([effective_singbox_path, "version"], check=True, capture_output=True, text=True, timeout=5, encoding='utf-8', errors='replace')
+        process_result = subprocess.run(
+            [effective_singbox_path, "version"], 
+            check=True, 
+            capture_output=True, 
+            text=True, 
+            timeout=5, 
+            encoding='utf-8', 
+            errors='replace'
+        )
         logging.info(f"Используется sing-box: {effective_singbox_path} (Версия: {process_result.stdout.strip()})")
     except FileNotFoundError:
         logging.error(f"КРИТИЧЕСКАЯ ОШИБКА: Исполняемый файл sing-box НЕ НАЙДЕН по пути: '{effective_singbox_path}'")
         logging.error("Убедитесь, что sing-box установлен, имеет права на выполнение (chmod +x) и путь указан верно (через --singbox-path или он есть в $PATH).")
-        sys.exit(1) # Выходим с кодом ошибки
-    # 
+        sys.exit(1)
     except subprocess.CalledProcessError as e:
         logging.error(f"Ошибка при вызове '{effective_singbox_path} version': {e}")
         stderr_output = e.stderr.decode('utf-8', errors='replace') if isinstance(e.stderr, bytes) else e.stderr
         logging.error(f"Вывод ошибки sing-box: {stderr_output}")
         sys.exit(1)
     except subprocess.TimeoutExpired:
-         logging.error(f"Таймаут при проверке версии sing-box: {effective_singbox_path}")
-         sys.exit(1)
+        logging.error(f"Таймаут при проверке версии sing-box: {effective_singbox_path}")
+        sys.exit(1)
     except Exception as e:
         logging.error(f"Неожиданная ошибка при проверке sing-box ('{effective_singbox_path}'): {e}")
         sys.exit(1)
 
-    #  Проверка наличия requests
+    # Проверка наличия и исполняемости advanced_test.py
+    advanced_script_path = ADVANCED_TEST_SCRIPT
+    if not os.path.isabs(advanced_script_path):
+        # Если указан относительный путь, преобразуем его в абсолютный
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        advanced_script_path = os.path.join(script_dir, advanced_script_path)
+    
+    if not os.path.exists(advanced_script_path):
+        logging.warning(f"Скрипт {advanced_script_path} не найден. Будет использовано значение константы.")
+    else:
+        ensure_executable_permissions(advanced_script_path)
+        logging.debug(f"Найден скрипт advanced_test.py: {advanced_script_path}")
+
+    # Проверка наличия requests
     try:
         import requests
         logging.debug(f"Модуль 'requests' успешно импортирован.")
     except ImportError:
         logging.error("КРИТИЧЕСКАЯ ОШИБКА: Модуль 'requests' не найден.")
         logging.error("Пожалуйста, установите его командой: pip install requests")
-        sys.exit(1) # Выходим, если requests не найден
+        sys.exit(1)
+
+    # Проверка доступа к файлу ввода
+    input_file_path = args.input_file
+    if not os.path.exists(input_file_path):
+        logging.error(f"КРИТИЧЕСКАЯ ОШИБКА: Файл не найден: {input_file_path}")
+        sys.exit(1)
+    
+    if not os.access(input_file_path, os.R_OK):
+        logging.error(f"КРИТИЧЕСКАЯ ОШИБКА: Нет прав на чтение файла: {input_file_path}")
+        sys.exit(1)
+
+    # Проверка возможности записи в выходной файл
+    try:
+        output_dir = args.advanced_output.parent
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Проверим, можем ли мы создать тестовый файл в этой директории
+        test_file = output_dir / f"test_write_{int(time.time())}.tmp"
+        try:
+            with open(test_file, 'w') as f:
+                f.write("test")
+            os.remove(test_file)
+        except (PermissionError, IOError) as e:
+            logging.error(f"КРИТИЧЕСКАЯ ОШИБКА: Нет прав на запись в директорию {output_dir}: {e}")
+            sys.exit(1)
+    except Exception as e:
+        logging.error(f"КРИТИЧЕСКАЯ ОШИБКА: Проблема с проверкой прав на запись: {e}")
+        sys.exit(1)
 
     # Чтение конфигураций
     configs = []
     try:
         logging.info(f"Чтение конфигураций из файла: {args.input_file}")
-        # 
         with open(args.input_file, 'r', encoding='utf-8') as f:
-            # Фильтруем пустые строки и строки, начинающиеся с # (комментарии)
             configs = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
         if not configs:
-             logging.warning(f"Файл '{args.input_file}' пуст или содержит только комментарии/пустые строки. Тестировать нечего.") # 
-             sys.exit(0) # Успешный выход, так как нет работы
+            logging.warning(f"Файл '{args.input_file}' пуст или содержит только комментарии/пустые строки. Тестировать нечего.")
+            sys.exit(0)
         logging.info(f"Загружено {len(configs)} конфигураций для тестирования.")
     except FileNotFoundError:
         logging.error(f"КРИТИЧЕСКАЯ ОШИБКА: Файл не найден: {args.input_file}")
@@ -722,46 +911,55 @@ def main():
         logging.error(f"Ошибка чтения файла {args.input_file}: {e}")
         sys.exit(1)
 
+    # Определяем оптимальное количество потоков
+    workers = args.workers
+    try:
+        import multiprocessing
+        cpu_count = multiprocessing.cpu_count()
+        if workers > cpu_count * 2:
+            logging.warning(f"Указано большое количество потоков ({workers}). Это может вызвать проблемы с производительностью.")
+            logging.warning(f"Рекомендуемое значение для вашей системы: {cpu_count} - {cpu_count * 2} потоков.")
+    except:
+        pass
+
     # Список для хранения рабочих конфигураций
     working_configs = []
-    # 
     start_time_total = time.time()
     total_configs = len(configs)
 
-    logging.info(f"Начало URL-тестирования ({args.workers} потоков)...")
+    logging.info(f"Начало URL-тестирования ({workers} потоков)...")
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
-        # Создаем задачи, передавая необходимые аргументы в perform_url_test
-        future_to_config = {
-            executor.submit(perform_url_test, config, args.url, args.timeout, effective_singbox_path, args.verbose): config
-            for config in configs
-        }
-
-        #  Собираем результаты по мере выполнения
-        for i, future in enumerate(concurrent.futures.as_completed(future_to_config), 1):
-            original_config_str = future_to_config[future]
+    # Основная логика тестирования
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        # Создаем задачи для пакетной обработки
+        futures = []
+        for config in configs:
+            future = executor.submit(
+                perform_url_test, 
+                config, 
+                args.url, 
+                args.timeout, 
+                effective_singbox_path, 
+                args.verbose
+            )
+            futures.append((future, config))
+        
+        # Собираем результаты по мере выполнения
+        for i, (future, original_config_str) in enumerate(futures, 1):
             try:
-                # Получаем результат из функции perform_url_test
                 result_dict = future.result()
-
-                #  Логируем общий прогресс
+                
                 status_msg = "УСПЕХ" if result_dict['success'] else "НЕУДАЧА"
                 error_msg = f" Ошибка: {result_dict['error']}" if not result_dict['success'] and result_dict['error'] else ""
-                # Не выводим latency для неудачных тестов
                 latency_msg = f" Задержка: {result_dict['latency_ms']}ms" if result_dict['success'] else ""
-
-                # 
+                
                 logging.info(f"({i}/{total_configs}) [{original_config_str[:25]}...] -> {status_msg}{latency_msg}{error_msg}")
-
-                # Если тест успешен, добавляем оригинальную строку конфига в список
+                
                 if result_dict['success']:
                     working_configs.append(original_config_str)
-
+                    
             except Exception as e:
-                #  Ловим ошибки, возникшие при выполнении future.result() (маловероятно)
-                # 
                 logging.error(f"({i}/{total_configs}) КРИТИЧЕСКАЯ ОШИБКА обработки результата для {original_config_str[:30]}...: {e}", exc_info=args.verbose)
-
 
     end_time_total = time.time()
     duration = end_time_total - start_time_total
@@ -771,83 +969,104 @@ def main():
     logging.info(f"URL-тестирование завершено за {duration:.2f} секунд.")
     logging.info(f"Итог URL-теста: {num_successful} конфигураций прошли, {num_failed} не прошли.")
 
-    #  Удален блок записи working_configs в файл
-
-    # --- Начало нового блока: Передача управления в advanced_test.py ---
-    temp_file_path = None # Инициализация пути к временному файлу
-    #  Проверяем, есть ли рабочие конфигурации для передачи
+    # Передача управления в advanced_test.py
     if working_configs:
-        try:
-            # Создаем временный файл для передачи рабочих конфигураций
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding='utf-8') as tmp_file:
-                json.dump(working_configs, tmp_file)
-                temp_file_path = tmp_file.name # Сохраняем путь к файлу # 
-
-            logging.info(f"Передача {len(working_configs)} рабочих конфигураций в {ADVANCED_TEST_SCRIPT}...")
-
-            # Формируем команду для запуска advanced_test.py
-            # Используем sys.executable для запуска скрипта тем же интерпретатором Python
-            cmd = [
-                sys.executable,
-                ADVANCED_TEST_SCRIPT,
-                "--input-file", temp_file_path,              # Передаем временный файл с конфигами
-                "--output-file", str(args.advanced_output), # Передаем путь для финального вывода
-                "--singbox-path", effective_singbox_path    # Передаем путь к sing-box
-            ]
-            if args.verbose:
-                cmd.append("--verbose") # Передаем флаг verbose, если он был установлен
-
-            logging.debug(f"Запуск команды: {' '.join(cmd)}")
-
-            # Запускаем advanced_test.py
-            # 
-            result = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8', errors='replace')
-
-            # Логируем вывод advanced_test.py
-            logging.info(f"--- Начало вывода {ADVANCED_TEST_SCRIPT} ---")
-            if result.stdout:
-                 logging.info(result.stdout.strip())
-            if result.stderr:
-                 # Логируем stderr как ошибку, если процесс завершился с ошибкой, иначе как warning
-                 if result.returncode != 0:
-                     logging.error(f"STDERR от {ADVANCED_TEST_SCRIPT}:\n{result.stderr.strip()}")
-                 else:
-                      logging.warning(f"STDERR от {ADVANCED_TEST_SCRIPT} (код возврата 0):\n{result.stderr.strip()}")
-            logging.info(f"--- Конец вывода {ADVANCED_TEST_SCRIPT} ---")
-
-            if result.returncode != 0:
-                 logging.error(f"{ADVANCED_TEST_SCRIPT} завершился с кодом ошибки {result.returncode}.")
-                 # Можно добавить sys.exit(1) здесь, если ошибка в advanced_test критична
-
-        #  Обрабатываем ошибки запуска subprocess
-        except subprocess.CalledProcessError as e: # check=True не используется, эта ошибка не возникнет
-             logging.error(f"Ошибка при запуске {ADVANCED_TEST_SCRIPT} (CalledProcessError): {e}")
-             stderr_output = e.stderr.decode('utf-8', errors='replace') if isinstance(e.stderr, bytes) else e.stderr
-             logging.error(f"Вывод ошибки:\n{stderr_output}")
-        except FileNotFoundError:
-             logging.error(f"КРИТИЧЕСКАЯ ОШИБКА: Скрипт {ADVANCED_TEST_SCRIPT} не найден.") # 
-             logging.error("Убедитесь, что файл advanced_test.py находится в той же директории или укажите правильный путь в константе ADVANCED_TEST_SCRIPT.")
-        except Exception as e: # Ловим другие возможные ошибки
-            logging.error(f"Неожиданная ошибка при запуске или обработке {ADVANCED_TEST_SCRIPT}: {e}", exc_info=args.verbose)
-
-        #  Очищаем временный файл в блоке finally
-        finally:
-             if temp_file_path:
-                 cleanup_file(temp_file_path)
-
-    else: # Если working_configs пуст
-        # 
+        with create_temp_file() as tmp_file:
+            # Очищаем конфигурации от потенциально проблемных символов
+            cleaned_configs = []
+            for config in working_configs:
+                try:
+                    # Экранируем или удаляем потенциально проблемные символы
+                    cleaned_config = config
+                    # Заменяем обратные кавычки (`) на обычные одинарные (')
+                    cleaned_config = cleaned_config.replace('`', "'")
+                    # Удаляем символы управления, которые могут нарушить формат JSON
+                    cleaned_config = ''.join(c for c in cleaned_config if ord(c) >= 32 or c in '\n\r\t')
+                    # Заменяем эмодзи и другие специальные символы на безопасные представления
+                    cleaned_config = cleaned_config.encode('ascii', errors='backslashreplace').decode('ascii')
+                    cleaned_configs.append(cleaned_config)
+                except Exception as e:
+                    logging.warning(f"Не удалось очистить конфигурацию: {config[:30]}... Ошибка: {e}")
+                    # Включаем исходную конфигурацию, если очистка не удалась
+                    cleaned_configs.append(config)
+            
+            try:
+                # Используем ensure_ascii=True для безопасного кодирования всех символов
+                json.dump(cleaned_configs, tmp_file, ensure_ascii=True)
+                tmp_file.flush()
+                temp_file_path = tmp_file.name
+                
+                # Проверяем созданный JSON на валидность перед передачей в advanced_test.py
+                with open(temp_file_path, 'r') as check_file:
+                    try:
+                        json.load(check_file)
+                        logging.debug(f"Проверка JSON перед передачей в advanced_test.py прошла успешно")
+                    except json.JSONDecodeError as e:
+                        logging.error(f"Созданный JSON невалиден: {e}")
+                        logging.error(f"Создаём JSON заново с дополнительной обработкой...")
+                        # Если проверка не удалась, создаем JSON построчно
+                        with open(temp_file_path, 'w') as retry_file:
+                            retry_file.write('[\n')
+                            for i, config in enumerate(cleaned_configs):
+                                if i > 0:
+                                    retry_file.write(',\n')
+                                # Используем repr() для гарантированного экранирования всех спецсимволов
+                                retry_file.write(json.dumps(config, ensure_ascii=True))
+                            retry_file.write('\n]')
+                
+                logging.info(f"Передача {len(cleaned_configs)} рабочих конфигураций в {ADVANCED_TEST_SCRIPT}...")
+                
+                # Формируем команду для запуска advanced_test.py
+                cmd = [
+                    sys.executable,
+                    advanced_script_path,
+                    "--input-file", temp_file_path,
+                    "--output-file", str(args.advanced_output),
+                    "--singbox-path", effective_singbox_path
+                ]
+                if args.verbose:
+                    cmd.append("--verbose")
+                    
+                logging.debug(f"Запуск команды: {' '.join(cmd)}")
+                
+                try:
+                    result = subprocess.run(
+                        cmd, 
+                        check=False, 
+                        capture_output=True, 
+                        text=True, 
+                        encoding='utf-8', 
+                        errors='replace'
+                    )
+                    
+                    # Логируем вывод advanced_test.py
+                    logging.info(f"--- Начало вывода {ADVANCED_TEST_SCRIPT} ---")
+                    if result.stdout:
+                        logging.info(result.stdout.strip())
+                    if result.stderr:
+                        if result.returncode != 0:
+                            logging.error(f"STDERR от {ADVANCED_TEST_SCRIPT}:\n{result.stderr.strip()}")
+                        else:
+                            logging.warning(f"STDERR от {ADVANCED_TEST_SCRIPT} (код возврата 0):\n{result.stderr.strip()}")
+                    logging.info(f"--- Конец вывода {ADVANCED_TEST_SCRIPT} ---")
+                    
+                    if result.returncode != 0:
+                        logging.error(f"{ADVANCED_TEST_SCRIPT} завершился с кодом ошибки {result.returncode}.")
+                        
+                except FileNotFoundError:
+                    logging.error(f"КРИТИЧЕСКАЯ ОШИБКА: Скрипт {ADVANCED_TEST_SCRIPT} не найден.")
+                    logging.error("Убедитесь, что файл advanced_test.py находится в той же директории или укажите правильный путь в константе ADVANCED_TEST_SCRIPT.")
+                except Exception as e:
+                    logging.error(f"Неожиданная ошибка при запуске или обработке {ADVANCED_TEST_SCRIPT}: {e}", exc_info=args.verbose)
+            except Exception as json_error:
+                logging.error(f"Ошибка при создании или обработке JSON: {json_error}")
+                # Если не удалось создать JSON, записываем конфигурации в обычный текстовый файл
+                with open(args.advanced_output, 'w', encoding='utf-8') as direct_output:
+                    for config in cleaned_configs:
+                        direct_output.write(f"{config}\n")
+                logging.info(f"Рабочие конфигурации ({len(cleaned_configs)}) сохранены напрямую в {args.advanced_output}")
+    else:
         logging.info("После URL-теста не осталось рабочих конфигураций. Запуск advanced_test.py пропущен.")
-        # Создаем пустой финальный файл, если он не существует, чтобы показать, что процесс завершился без ошибок, но без результата
-        try:
-             # 
-             args.advanced_output.parent.mkdir(parents=True, exist_ok=True)
-             with open(args.advanced_output, 'w', encoding='utf-8') as f:
-                 pass # Создаем пустой файл
-             logging.info(f"Создан пустой финальный файл результатов: {args.advanced_output}")
-        except Exception as e:
-             # 
-             logging.error(f"Ошибка создания пустого финального файла результатов {args.advanced_output}: {e}")
 
 
 if __name__ == "__main__":
