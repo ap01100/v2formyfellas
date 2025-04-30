@@ -162,6 +162,183 @@ def is_process_running(process: Optional[subprocess.Popen]) -> bool:
         return False
     return process.poll() is None
 
+# --- Функции удаления дубликатов ---
+
+def get_config_type(config_str: str) -> str:
+    """Определяет тип конфигурации по её URI."""
+    if config_str.startswith("ss://"):
+        return "shadowsocks"
+    elif config_str.startswith("trojan://"):
+        return "trojan"
+    elif config_str.startswith("vmess://"):
+        return "vmess"
+    elif config_str.startswith("vless://"):
+        return "vless"
+    else:
+        return "unknown"
+
+def extract_functional_params(config_str: str) -> Dict[str, Any]:
+    """
+    Извлекает функционально значимые параметры из конфигурации,
+    используя существующие парсеры конфигураций.
+    """
+    config_type = get_config_type(config_str)
+    
+    try:
+        if config_type == "shadowsocks":
+            params = parse_ss_config(config_str)
+            return {
+                "type": "shadowsocks",
+                "server": params.get("server", ""),
+                "server_port": params.get("server_port", 0),
+                "method": params.get("method", ""),
+                "password": params.get("password", "")
+            }
+        elif config_type == "trojan":
+            params = parse_trojan_config(config_str)
+            result = {
+                "type": "trojan",
+                "server": params.get("server", ""),
+                "server_port": params.get("server_port", 0),
+                "password": params.get("password", "")
+            }
+            if "tls" in params:
+                result["tls"] = {
+                    "server_name": params["tls"].get("server_name", ""),
+                    "insecure": params["tls"].get("insecure", False),
+                    "alpn": params["tls"].get("alpn")
+                }
+            if "transport" in params:
+                result["transport"] = {
+                    "type": params["transport"].get("type", "tcp"),
+                    "path": params["transport"].get("path", "/")
+                }
+            return result
+        elif config_type == "vmess":
+            params = parse_vmess_config(config_str)
+            result = {
+                "type": "vmess",
+                "server": params.get("server", ""),
+                "server_port": params.get("server_port", 0),
+                "uuid": params.get("uuid", ""),
+                "security": params.get("security", "auto"),
+                "alter_id": params.get("alter_id", 0)
+            }
+            if "tls" in params:
+                result["tls"] = {
+                    "enabled": True,
+                    "server_name": params["tls"].get("server_name", ""),
+                    "insecure": params["tls"].get("insecure", False),
+                    "alpn": params["tls"].get("alpn")
+                }
+            if "transport" in params:
+                result["transport"] = {
+                    "type": params["transport"].get("type", "tcp"),
+                    "path": params["transport"].get("path", "/"),
+                    "service_name": params["transport"].get("service_name", "")
+                }
+            return result
+        elif config_type == "vless":
+            params = parse_vless_config(config_str)
+            result = {
+                "type": "vless",
+                "server": params.get("server", ""),
+                "server_port": params.get("server_port", 0),
+                "uuid": params.get("uuid", ""),
+                "flow": params.get("flow")
+            }
+            if "tls" in params:
+                result["tls"] = {
+                    "enabled": True,
+                    "server_name": params["tls"].get("server_name", ""),
+                    "insecure": params["tls"].get("insecure", False),
+                    "alpn": params["tls"].get("alpn")
+                }
+                if "reality" in params["tls"]:
+                    result["tls"]["reality"] = {
+                        "enabled": True,
+                        "public_key": params["tls"]["reality"].get("public_key", ""),
+                        "short_id": params["tls"]["reality"].get("short_id", "")
+                    }
+            if "transport" in params:
+                result["transport"] = {
+                    "type": params["transport"].get("type", "tcp"),
+                    "path": params["transport"].get("path", "/"),
+                    "service_name": params["transport"].get("service_name", "")
+                }
+            return result
+        else:
+            return {"type": "unknown", "config": config_str}
+    except Exception as e:
+        logging.debug(f"Ошибка извлечения параметров из {config_str[:30]}...: {e}")
+        return {"type": "error", "config": config_str, "error": str(e)}
+
+def is_functional_duplicate(config1: str, config2: str) -> bool:
+    """
+    Проверяет, являются ли две конфигурации функциональными дубликатами.
+    """
+    try:
+        params1 = extract_functional_params(config1)
+        params2 = extract_functional_params(config2)
+        
+        # Если типы разные, это не дубликаты
+        if params1.get("type") != params2.get("type"):
+            return False
+        
+        # Если при разборе возникла ошибка, не считаем дубликатами
+        if params1.get("type") == "error" or params2.get("type") == "error":
+            return False
+        
+        # Удаляем поле "type" перед сравнением остальных параметров
+        if "type" in params1:
+            del params1["type"]
+        if "type" in params2:
+            del params2["type"]
+        
+        # Сравниваем оставшиеся параметры
+        return params1 == params2
+    except Exception as e:
+        logging.debug(f"Ошибка при сравнении конфигураций: {e}")
+        return False
+
+def remove_functional_duplicates(configs: List[str]) -> List[str]:
+    """
+    Удаляет функциональные дубликаты из списка конфигураций.
+    Сохраняет первое вхождение уникальной конфигурации.
+    """
+    if not configs:
+        return []
+    
+    logging.info(f"Начало удаления дубликатов из {len(configs)} конфигураций...")
+    unique_configs = []
+    duplicates_count = 0
+    duplicate_types = {"shadowsocks": 0, "trojan": 0, "vmess": 0, "vless": 0, "unknown": 0}
+    
+    for config in configs:
+        is_duplicate = False
+        config_type = get_config_type(config)
+        
+        for unique_config in unique_configs:
+            if is_functional_duplicate(config, unique_config):
+                is_duplicate = True
+                duplicates_count += 1
+                duplicate_types[config_type] += 1
+                
+                if logging.getLogger().isEnabledFor(logging.DEBUG):
+                    logging.debug(f"Найден дубликат [{config_type}]: {config[:50]}... дублирует {unique_config[:50]}...")
+                break
+        
+        if not is_duplicate:
+            unique_configs.append(config)
+    
+    if duplicates_count > 0:
+        logging.info(f"Удалено {duplicates_count} дубликатов. Осталось {len(unique_configs)} уникальных конфигураций.")
+        logging.info(f"Распределение дубликатов по типам: {', '.join([f'{k}: {v}' for k, v in duplicate_types.items() if v > 0])}")
+    else:
+        logging.info("Дубликаты не найдены.")
+    
+    return unique_configs
+
 # --- Парсеры конфигураций (оставлены без изменений) ---
 
 # 
@@ -790,6 +967,11 @@ def main():
         action="store_true",
         help="Включить подробное логирование (уровень DEBUG)."
     )
+    parser.add_argument(
+        "--no-deduplicate",
+        action="store_true",
+        help="Отключить удаление функциональных дубликатов конфигураций."
+    )
 
     args = parser.parse_args()
 
@@ -904,6 +1086,14 @@ def main():
             logging.warning(f"Файл '{args.input_file}' пуст или содержит только комментарии/пустые строки. Тестировать нечего.")
             sys.exit(0)
         logging.info(f"Загружено {len(configs)} конфигураций для тестирования.")
+        
+        # Удаление функциональных дубликатов перед тестированием
+        if not args.no_deduplicate:
+            configs = remove_functional_duplicates(configs)
+            logging.info("Удаление дубликатов выполнено успешно.")
+        else:
+            logging.info("Удаление дубликатов отключено через аргумент --no-deduplicate.")
+        
     except FileNotFoundError:
         logging.error(f"КРИТИЧЕСКАЯ ОШИБКА: Файл не найден: {args.input_file}")
         sys.exit(1)
