@@ -84,28 +84,37 @@ def parse_ss_config(config_str: str) -> Dict[str, Any]:
     """Парсит конфигурацию Shadowsocks (ss://)."""
     parsed = urllib.parse.urlparse(config_str)
     user_info_part = parsed.netloc.split('@')[0]
-    server_part = parsed.netloc.split('@')[1]
+    server_part = parsed.netloc.split('@')[1] if '@' in parsed.netloc else parsed.netloc
     host, port_str = server_part.split(':')
     port = int(port_str)
     method = None
     password = None
-    try:
-        decoded_user_info = base64.urlsafe_b64decode(user_info_part + '===').decode('utf-8')
-        method, password = decoded_user_info.split(':', 1)
-    except (base64.binascii.Error, ValueError, UnicodeDecodeError):
-        logging.warning(f"Не удалось декодировать user_info '{user_info_part}' как base64 для SS, пробуем другие варианты")
+    
+    # Проверка, похож ли user_info_part на UUID
+    uuid_pattern = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
+    if uuid_pattern.match(user_info_part):
+        # Если это UUID, используем его как пароль и устанавливаем метод по умолчанию
+        logging.debug(f"Обнаружен UUID как пароль для SS: {user_info_part}")
+        method = "aes-256-gcm"  # Метод по умолчанию
+        password = user_info_part
+    else:
         try:
-            # Пробуем формат method:password без base64
-            if ':' in user_info_part:
-                 method, password = user_info_part.split(':', 1)
-            else:
-                 # Если нет ':', пробуем декодировать как пароль base64
-                 password = base64.urlsafe_b64decode(user_info_part + '===').decode('utf-8')
-                 method = "aes-256-gcm" # Пример дефолтного метода
-                 logging.warning(f"Метод SS не найден, использован по умолчанию: {method}")
-        except Exception as inner_e:
-             logging.error(f"Не удалось определить метод/пароль SS из '{user_info_part}'. Ошибка: {inner_e}")
-             raise ValueError(f"Не удалось определить метод/пароль SS из '{user_info_part}'")
+            decoded_user_info = base64.urlsafe_b64decode(user_info_part + '===').decode('utf-8')
+            method, password = decoded_user_info.split(':', 1)
+        except (base64.binascii.Error, ValueError, UnicodeDecodeError):
+            logging.warning(f"Не удалось декодировать user_info '{user_info_part}' как base64 для SS, пробуем другие варианты")
+            try:
+                # Пробуем формат method:password без base64
+                if ':' in user_info_part:
+                     method, password = user_info_part.split(':', 1)
+                else:
+                     # Если это не UUID и нет ':', предполагаем, что это просто пароль (не в base64)
+                     password = user_info_part
+                     method = "aes-256-gcm"  # Метод по умолчанию
+                     logging.warning(f"Метод SS не найден, использован по умолчанию: {method}")
+            except Exception as inner_e:
+                 logging.error(f"Не удалось определить метод/пароль SS из '{user_info_part}'. Ошибка: {inner_e}")
+                 raise ValueError(f"Не удалось определить метод/пароль SS из '{user_info_part}'")
 
     if not method or not password:
          raise ValueError("Не удалось извлечь метод или пароль SS")
