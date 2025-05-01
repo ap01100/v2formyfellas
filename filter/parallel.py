@@ -6,7 +6,7 @@ Handles concurrent testing of multiple proxy configurations.
 import concurrent.futures
 import logging
 import time
-from typing import List, Dict, Any, Callable, TypeVar, Generic
+from typing import List, Dict, Any, Callable, TypeVar, Generic, Union
 
 T = TypeVar('T')
 R = TypeVar('R')
@@ -81,6 +81,10 @@ def run_url_tests_parallel(configs: List[str], test_func: Callable, max_workers:
         test_func: Function that tests a single configuration
         max_workers: Maximum number of concurrent threads
         **kwargs: Additional arguments to pass to test_func
+            test_url: URL or list of URLs to test with
+            timeout: Request timeout in seconds
+            singbox_path: Path to sing-box executable
+            verbose: Enable verbose logging
         
     Returns:
         Dict with 'working' and 'failed' lists
@@ -108,7 +112,13 @@ def run_url_tests_parallel(configs: List[str], test_func: Callable, max_workers:
             failed.append(result["config"])
     
     success_rate = len(working) / len(configs) * 100 if configs else 0
-    logging.info(f"Testing completed: {len(working)}/{len(configs)} working ({success_rate:.1f}%)")
+    
+    # Count URLs tested
+    if results and "url_results" in results[0]:
+        url_count = len(results[0]["url_results"])
+        logging.info(f"URL testing completed on {url_count} URLs: {len(working)}/{len(configs)} working ({success_rate:.1f}%)")
+    else:
+        logging.info(f"Testing completed: {len(working)}/{len(configs)} working ({success_rate:.1f}%)")
     
     return {
         "working": working,

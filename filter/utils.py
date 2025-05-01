@@ -191,6 +191,99 @@ def remove_duplicates(configs: List[str]) -> List[str]:
     
     return unique_configs
 
+def remove_duplicates_advanced(configs: List[str]) -> List[str]:
+    """
+    Advanced duplicate removal for proxy configurations.
+    
+    Considers configurations as duplicates if all parameters except name are identical.
+    This implementation parses each configuration to extract its parameters and then
+    compares them, ignoring the name/remark field.
+    
+    Args:
+        configs: List of configuration strings to deduplicate
+        
+    Returns:
+        List of unique configurations
+    """
+    if not configs:
+        return []
+    
+    from parsers import parse_ss_config, parse_trojan_config, parse_vmess_config, parse_vless_config
+    
+    logging.info(f"Removing duplicates (advanced mode) from {len(configs)} configurations...")
+    unique_configs = []
+    seen_fingerprints = set()
+    duplicates_count = 0
+    
+    # Map of protocol prefixes to their corresponding parser functions
+    parser_map = {
+        "ss://": parse_ss_config,
+        "trojan://": parse_trojan_config,
+        "vmess://": parse_vmess_config,
+        "vless://": parse_vless_config,
+    }
+    
+    def get_config_fingerprint(config_str: str) -> str:
+        """
+        Generate a fingerprint for a configuration by extracting and 
+        normalizing its parameters (excluding name/tag).
+        
+        Returns an empty string if parsing fails.
+        """
+        protocol = None
+        for prefix in parser_map:
+            if config_str.startswith(prefix):
+                protocol = prefix
+                break
+        
+        if not protocol:
+            # Unknown protocol, can't deduplicate
+            return ""
+        
+        try:
+            # Parse the configuration
+            parser = parser_map[protocol]
+            parsed = parser(config_str)
+            
+            # Create a normalized copy without tag field
+            fingerprint = dict(parsed)
+            if "tag" in fingerprint:
+                del fingerprint["tag"]
+            
+            # Convert to a string representation for hashing
+            import json
+            return protocol + json.dumps(fingerprint, sort_keys=True)
+        except Exception as e:
+            # Log the error but don't halt the process
+            logging.debug(f"Failed to parse configuration for deduplication: {str(e)}")
+            # Use a simplified fingerprint based on the raw string
+            # This prevents complete failure but may not catch all duplicates
+            import hashlib
+            simplified_hash = hashlib.md5(config_str.encode('utf-8')).hexdigest()
+            return f"{protocol}_unparseable_{simplified_hash}"
+    
+    for config in configs:
+        fingerprint = get_config_fingerprint(config)
+        
+        if not fingerprint:
+            # If we couldn't parse the config, keep it as is
+            unique_configs.append(config)
+            continue
+        
+        if fingerprint in seen_fingerprints:
+            duplicates_count += 1
+            continue
+        
+        seen_fingerprints.add(fingerprint)
+        unique_configs.append(config)
+    
+    if duplicates_count > 0:
+        logging.info(f"Removed {duplicates_count} duplicates (advanced mode). {len(unique_configs)} unique configs remain.")
+    else:
+        logging.info("No duplicates found (advanced mode).")
+    
+    return unique_configs
+
 def cleanup_all_temp_files():
     """Cleans up all temporary files in the workfiles directory."""
     if not os.path.exists(WORKFILES_DIR):

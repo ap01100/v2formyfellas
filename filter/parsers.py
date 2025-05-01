@@ -16,6 +16,11 @@ def parse_ss_config(config_str: str) -> Dict[str, Any]:
     parsed = urllib.parse.urlparse(config_str)
     user_info_part = parsed.netloc.split('@')[0]
     server_part = parsed.netloc.split('@')[1] if '@' in parsed.netloc else parsed.netloc
+    
+    # Make sure server_part contains host:port format
+    if ':' not in server_part:
+        raise ValueError(f"Invalid server part in SS URL: {server_part}, missing port")
+    
     host, port_str = server_part.split(':')
     port = int(port_str)
     method = None
@@ -23,20 +28,32 @@ def parse_ss_config(config_str: str) -> Dict[str, Any]:
     
     # Check if user_info_part looks like a UUID
     uuid_pattern = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
+    hex_pattern = re.compile(r'^[0-9a-f]+$', re.IGNORECASE)
+    
     if uuid_pattern.match(user_info_part):
         # If it's a UUID, use it as the password and set default method
         logging.debug(f"UUID detected as password for SS: {user_info_part}")
         method = DEFAULT_SS_METHOD
         password = user_info_part
+    elif hex_pattern.match(user_info_part) and len(user_info_part) >= 32:
+        # If it's a hex string (common for some SS implementations)
+        logging.debug(f"Hex string detected as password for SS: {user_info_part}")
+        method = DEFAULT_SS_METHOD
+        password = user_info_part
     else:
         try:
-            decoded_user_info = base64.urlsafe_b64decode(user_info_part + '===').decode('utf-8')
+            # Add proper padding for base64 decoding
+            padding_needed = len(user_info_part) % 4
+            if padding_needed:
+                user_info_part += '=' * (4 - padding_needed)
             
-            # Проверяем, является ли декодированная строка JSON-объектом
+            decoded_user_info = base64.urlsafe_b64decode(user_info_part).decode('utf-8')
+            
+            # Check if decoded string is JSON
             if decoded_user_info.startswith('{') and decoded_user_info.endswith('}'):
                 try:
                     json_config = json.loads(decoded_user_info)
-                    # Обрабатываем JSON-конфигурацию (в формате VMess, но передаваемую через SS)
+                    # Process JSON configuration (in VMess format but passed via SS)
                     method = json_config.get("scy", DEFAULT_SS_METHOD)
                     password = json_config.get("id", "")
                     if json_config.get("add"):
@@ -52,25 +69,30 @@ def parse_ss_config(config_str: str) -> Dict[str, Any]:
                 except json.JSONDecodeError as e:
                     raise ValueError(f"Failed to parse SS JSON configuration: {e}")
             else:
-                # Стандартный формат method:password
-                method, password = decoded_user_info.split(':', 1)
+                # Standard method:password format
+                if ':' in decoded_user_info:
+                    method, password = decoded_user_info.split(':', 1)
+                else:
+                    # If no colon, assume it's just a password
+                    password = decoded_user_info
+                    method = DEFAULT_SS_METHOD
         except (base64.binascii.Error, ValueError, UnicodeDecodeError):
-            logging.warning(f"Failed to decode user_info '{user_info_part}' as base64 for SS, trying other formats")
+            logging.info(f"Failed to decode user_info '{user_info_part}' as base64 for SS, trying other formats")
             try:
                 # Try method:password format without base64
                 if ':' in user_info_part:
-                     method, password = user_info_part.split(':', 1)
+                    method, password = user_info_part.split(':', 1)
                 else:
-                     # If not UUID and no ':', assume it's just a password (not in base64)
-                     password = user_info_part
-                     method = DEFAULT_SS_METHOD
-                     logging.warning(f"SS method not found, using default: {method}")
+                    # If not UUID and no ':', assume it's just a password (not in base64)
+                    password = user_info_part
+                    method = DEFAULT_SS_METHOD
+                    logging.info(f"SS method not found, using default: {method}")
             except Exception as inner_e:
-                 logging.error(f"Failed to determine SS method/password from '{user_info_part}'. Error: {inner_e}")
-                 raise ValueError(f"Failed to extract SS method/password from '{user_info_part}'")
+                logging.error(f"Failed to determine SS method/password from '{user_info_part}'. Error: {inner_e}")
+                raise ValueError(f"Failed to extract SS method/password from '{user_info_part}'")
 
     if not method or not password:
-         raise ValueError("Failed to extract SS method or password")
+        raise ValueError("Failed to extract SS method or password")
 
     remark = urllib.parse.unquote(parsed.fragment) if parsed.fragment else host
     return {

@@ -4,7 +4,8 @@ Contains all constants and configuration settings.
 """
 
 # Default settings
-DEFAULT_TEST_URL = "http://cp.cloudflare.com"
+DEFAULT_TEST_URLS = ["http://cp.cloudflare.com", "https://gemini.google.com"]  # List of URLs to test
+MULTIPLE_URL_MODE = "all"  # Options: "all" (all URLs must work), "any" (at least one must work)
 DEFAULT_TIMEOUT = 10
 DEFAULT_WORKERS = 5
 MAX_WAIT_TIME = 15  # Maximum time to wait for sing-box to start
