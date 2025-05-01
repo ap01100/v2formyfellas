@@ -31,7 +31,29 @@ def parse_ss_config(config_str: str) -> Dict[str, Any]:
     else:
         try:
             decoded_user_info = base64.urlsafe_b64decode(user_info_part + '===').decode('utf-8')
-            method, password = decoded_user_info.split(':', 1)
+            
+            # Проверяем, является ли декодированная строка JSON-объектом
+            if decoded_user_info.startswith('{') and decoded_user_info.endswith('}'):
+                try:
+                    json_config = json.loads(decoded_user_info)
+                    # Обрабатываем JSON-конфигурацию (в формате VMess, но передаваемую через SS)
+                    method = json_config.get("scy", DEFAULT_SS_METHOD)
+                    password = json_config.get("id", "")
+                    if json_config.get("add"):
+                        host = json_config.get("add")
+                    if json_config.get("port"):
+                        port = int(json_config.get("port"))
+                    remark = json_config.get("ps", host)
+                    
+                    return {
+                        "type": "shadowsocks", "tag": f"ss-out-{remark[:10]}", "server": host,
+                        "server_port": port, "method": method, "password": password,
+                    }
+                except json.JSONDecodeError as e:
+                    raise ValueError(f"Failed to parse SS JSON configuration: {e}")
+            else:
+                # Стандартный формат method:password
+                method, password = decoded_user_info.split(':', 1)
         except (base64.binascii.Error, ValueError, UnicodeDecodeError):
             logging.warning(f"Failed to decode user_info '{user_info_part}' as base64 for SS, trying other formats")
             try:
@@ -115,9 +137,11 @@ def parse_vmess_config(config_str: str) -> Dict[str, Any]:
         "alter_id": int(vmess_params.get("aid", 0)),
    }
 
+   # Инициализируем sni до условного блока
+   sni = vmess_params.get("sni", vmess_params.get("host", host))  # SNI defaults to host or add
+   
    tls_enabled = vmess_params.get("tls", "") == "tls"
    if tls_enabled:
-        sni = vmess_params.get("sni", vmess_params.get("host", host))  # SNI defaults to host or add
         outbound["tls"] = {
             "enabled": True, "server_name": sni,
             "insecure": str(vmess_params.get("allowInsecure", vmess_params.get("allow_insecure", "false"))).lower() == "true",

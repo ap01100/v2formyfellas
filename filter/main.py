@@ -19,7 +19,10 @@ from config import (
     DEFAULT_IP_SERVICE_URL, DEFAULT_IP_SERVICE_TIMEOUT, DEFAULT_WORKERS_ADVANCED,
     SINGBOX_EXECUTABLE
 )
-from utils import check_ubuntu_compatibility, ensure_executable_permissions, remove_duplicates
+from utils import (
+    check_ubuntu_compatibility, ensure_executable_permissions, remove_duplicates,
+    ensure_workfiles_dir, cleanup_all_temp_files
+)
 from url_tester import perform_url_test
 from advanced_tester import perform_advanced_test
 from parallel import run_url_tests_parallel, run_advanced_tests_parallel
@@ -228,6 +231,10 @@ def main():
     # Setup logging
     setup_logging(args.verbose)
     
+    # Create workfiles directory
+    ensure_workfiles_dir()
+    logging.info("Initialized workfiles directory for temporary files")
+    
     # Check compatibility and sing-box
     check_ubuntu_compatibility()
     if not ensure_executable_permissions(args.singbox_path):
@@ -340,6 +347,10 @@ def main():
     # Print summary
     success_rate = len(working_configs) / len(configs) * 100 if configs else 0
     logging.info(f"Testing completed: {len(working_configs)}/{len(configs)} working configurations ({success_rate:.1f}%)")
+    
+    # Clean up any remaining temp files
+    cleanup_all_temp_files()
+    logging.debug("Cleaned up all temporary files")
     
     return 0
 

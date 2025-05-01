@@ -13,6 +13,34 @@ from typing import Optional, List
 from contextlib import contextmanager
 from config import MAX_WAIT_TIME, SOCKET_CHECK_INTERVAL, MAX_ERROR_OUTPUT_LEN
 
+# Define workfiles directory path
+WORKFILES_DIR = "workfiles"
+
+def ensure_workfiles_dir():
+    """Ensures the workfiles directory exists."""
+    os.makedirs(WORKFILES_DIR, exist_ok=True)
+    logging.debug(f"Ensured workfiles directory exists at: {WORKFILES_DIR}")
+    return WORKFILES_DIR
+
+def get_temp_file_path(prefix="temp", port=None, suffix=".json"):
+    """
+    Generates a path for a temporary file in the workfiles directory.
+    
+    Args:
+        prefix: Prefix for the filename
+        port: Optional port number to include in the filename
+        suffix: File extension
+        
+    Returns:
+        Path to the temporary file
+    """
+    ensure_workfiles_dir()
+    if port:
+        filename = f"{prefix}_{port}{suffix}"
+    else:
+        filename = f"{prefix}_{int(time.time())}{suffix}"
+    return os.path.join(WORKFILES_DIR, filename)
+
 def check_ubuntu_compatibility():
     """Checks compatibility with Ubuntu 22.04."""
     try:
@@ -56,19 +84,15 @@ def ensure_executable_permissions(file_path):
 
 @contextmanager
 def create_temp_file(suffix=".json"):
-    """Creates a temporary file and ensures it's deleted after use."""
+    """Creates a temporary file in the workfiles directory and ensures it's deleted after use."""
     temp_path = None
     try:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=suffix, delete=False, encoding='utf-8') as tmp_file:
-            temp_path = tmp_file.name
+        ensure_workfiles_dir()
+        temp_path = os.path.join(WORKFILES_DIR, f"temp_{int(time.time())}{suffix}")
+        with open(temp_path, "w", encoding="utf-8") as tmp_file:
             yield tmp_file
     finally:
-        if temp_path and os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-                logging.debug(f"Temporary file removed: {temp_path}")
-            except Exception as e:
-                logging.error(f"Error deleting temporary file {temp_path}: {e}")
+        cleanup_file(temp_path)
 
 def find_free_port() -> int:
     """Finds a free TCP port."""
@@ -165,4 +189,14 @@ def remove_duplicates(configs: List[str]) -> List[str]:
     else:
         logging.info("No duplicates found.")
     
-    return unique_configs 
+    return unique_configs
+
+def cleanup_all_temp_files():
+    """Cleans up all temporary files in the workfiles directory."""
+    if not os.path.exists(WORKFILES_DIR):
+        return
+        
+    for filename in os.listdir(WORKFILES_DIR):
+        if filename.startswith("temp_") and filename.endswith(".json"):
+            filepath = os.path.join(WORKFILES_DIR, filename)
+            cleanup_file(filepath) 

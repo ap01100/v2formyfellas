@@ -12,7 +12,7 @@ import logging
 from typing import Dict, Any, Optional, List
 
 from config import DEFAULT_TEST_URL, DEFAULT_TIMEOUT, USER_AGENT
-from utils import find_free_port, cleanup_process, cleanup_file, wait_for_port
+from utils import find_free_port, cleanup_process, cleanup_file, wait_for_port, get_temp_file_path
 from parsers import convert_to_singbox_config
 
 def perform_url_test(config_str: str, test_url: str, timeout: float, singbox_path: str, verbose: bool) -> Dict[str, Any]:
@@ -39,10 +39,10 @@ def perform_url_test(config_str: str, test_url: str, timeout: float, singbox_pat
         log_level = "debug" if verbose else "warn"
         singbox_config = convert_to_singbox_config(config_str, socks_port, log_level)
         
-        # 2. Write config to temp file
-        with open(f"temp_{socks_port}.json", "w", encoding="utf-8") as tmp:
+        # 2. Write config to temp file in workfiles directory
+        config_file = get_temp_file_path("temp", socks_port)
+        with open(config_file, "w", encoding="utf-8") as tmp:
             json.dump(singbox_config, tmp)
-            config_file = tmp.name
             
         # 3. Start sing-box
         cmd = [singbox_path, "run", "-c", config_file]

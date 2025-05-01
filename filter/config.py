@@ -25,4 +25,4 @@ SINGBOX_EXECUTABLE = "sing-box"  # Assuming sing-box is in PATH or specify full 
 ADVANCED_TEST_SCRIPT = "advanced_test.py"  # Assuming it's in the same directory
 
 # User agent for HTTP requests
-USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36' 
+USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36'

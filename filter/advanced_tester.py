@@ -15,7 +15,7 @@ from config import (
     DEFAULT_TCP_TEST_HOST, DEFAULT_TCP_TEST_PORT, DEFAULT_TCP_TIMEOUT,
     DEFAULT_IP_SERVICE_URL, DEFAULT_IP_SERVICE_TIMEOUT
 )
-from utils import find_free_port, cleanup_process, cleanup_file, wait_for_port
+from utils import find_free_port, cleanup_process, cleanup_file, wait_for_port, get_temp_file_path
 from parsers import convert_to_singbox_config, parse_ss_config, parse_trojan_config, parse_vmess_config, parse_vless_config
 
 def get_inbound_ip(config_str: str) -> Optional[str]:
@@ -72,10 +72,10 @@ def tcp_ping_latency_test(
         log_level = "debug" if verbose else "warn"
         singbox_config = convert_to_singbox_config(config_str, socks_port, log_level)
 
-        # 2. Write config to temp file
-        with open(f"temp_tcp_{socks_port}.json", "w", encoding="utf-8") as tmp:
+        # 2. Write config to temp file in workfiles directory
+        config_file = get_temp_file_path("temp_tcp", socks_port)
+        with open(config_file, "w", encoding="utf-8") as tmp:
             json.dump(singbox_config, tmp)
-            config_file = tmp.name
         logging.debug(f"{log_prefix} sing-box config written to {config_file}")
 
         # 3. Start sing-box
@@ -210,9 +210,10 @@ def get_outbound_ip(
         log_level = "debug" if verbose else "warn"
         singbox_config = convert_to_singbox_config(config_str, socks_port, log_level)
 
-        with open(f"temp_ip_{socks_port}.json", "w", encoding="utf-8") as tmp:
+        # Write config to temp file in workfiles directory
+        config_file = get_temp_file_path("temp_ip", socks_port)
+        with open(config_file, "w", encoding="utf-8") as tmp:
             json.dump(singbox_config, tmp)
-            config_file = tmp.name
         logging.debug(f"{log_prefix} sing-box config written to {config_file}")
 
         cmd = [singbox_path, "run", "-c", config_file]
