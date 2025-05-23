@@ -1,0 +1,13 @@
+# Файл с источниками конфигураций v2ray
+# Каждая строка содержит один URL источника
+# Строки, начинающиеся с #, считаются комментариями и игнорируются
+# Данные из всех источников автоматически проверяются на base64-кодирование
+
+# Стандартные источники
+https://raw.githubusercontent.com/barry-far/V2ray-Configs/refs/heads/main/All_Configs_Sub.txt
+https://raw.githubusercontent.com/Epodonios/v2ray-configs/refs/heads/main/All_Configs_Sub.txt
+https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/splitted/subscribe
+
+# Примеры добавления других источников (закомментированы)
+# https://example.com/path/to/configs.txt
+# https://another-example.com/v2ray/configs 
