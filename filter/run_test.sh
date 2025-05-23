@@ -15,7 +15,7 @@ TEMP_URL_FILE="${WORK_DIR}/url_tested.txt"
 TESTED_FILE="tested.txt"
 
 # Файл с источниками конфигураций
-SOURCES_FILE="filter/sources.txt"
+SOURCES_FILE="sources.txt"
 
 # Настройки
 SINGBOX_PATH="/usr/local/bin/sing-box"
