@@ -9,14 +9,18 @@ import json
 import subprocess
 import socket
 import logging
+import sys
+import requests
+import socks  # Добавляем импорт PySocks для прямой работы с SOCKS-прокси
 from typing import Dict, Any, Optional, Tuple, List
 
-from config import (
+from filter.config import (
     DEFAULT_TCP_TEST_HOST, DEFAULT_TCP_TEST_PORT, DEFAULT_TCP_TIMEOUT,
-    DEFAULT_IP_SERVICE_URL, DEFAULT_IP_SERVICE_TIMEOUT
+    DEFAULT_IP_SERVICE_URL, DEFAULT_IP_SERVICE_TIMEOUT,
+    MAX_WAIT_TIME, SOCKET_CHECK_INTERVAL, USER_AGENT
 )
-from utils import find_free_port, cleanup_process, cleanup_file, wait_for_port, get_temp_file_path
-from parsers import convert_to_singbox_config, parse_ss_config, parse_trojan_config, parse_vmess_config, parse_vless_config
+from filter.utils import find_free_port, cleanup_process, cleanup_file, wait_for_port, get_temp_file_path
+from filter.parsers import convert_to_singbox_config, parse_ss_config, parse_trojan_config, parse_vmess_config, parse_vless_config
 
 def get_inbound_ip(config_str: str) -> Optional[str]:
     """Extracts the server (inbound) IP address from a configuration string."""
@@ -46,6 +50,40 @@ def get_inbound_ip(config_str: str) -> Optional[str]:
         logging.error(f"{log_prefix} Error parsing to get Inbound IP: {e}")
         return None
 
+def tcp_ping_with_python(host: str, port: int, proxy_port: int, timeout: float) -> Tuple[bool, Optional[float], Optional[str]]:
+    """
+    Выполняет TCP-пинг с использованием чистого Python и библиотеки PySocks.
+    Эта функция является альтернативой для Windows, где netcat может быть недоступен.
+    """
+    start_time = time.time()
+    sock = None
+    
+    try:
+        # Создаем SOCKS5-прокси сокет
+        sock = socks.socksocket()
+        sock.set_proxy(socks.SOCKS5, "127.0.0.1", proxy_port)
+        sock.settimeout(timeout)
+        
+        # Пытаемся подключиться к целевому хосту
+        sock.connect((host, port))
+        end_time = time.time()
+        latency = (end_time - start_time) * 1000  # в мс
+        
+        return True, round(latency), None
+    except socks.ProxyConnectionError as e:
+        return False, None, f"Ошибка подключения к прокси: {str(e)}"
+    except socks.GeneralProxyError as e:
+        return False, None, f"Общая ошибка прокси: {str(e)}"
+    except socket.timeout:
+        return False, None, f"Таймаут подключения к {host}:{port}"
+    except socket.error as e:
+        return False, None, f"Ошибка сокета: {str(e)}"
+    except Exception as e:
+        return False, None, f"Непредвиденная ошибка: {type(e).__name__}: {str(e)}"
+    finally:
+        if sock:
+            sock.close()
+
 def tcp_ping_latency_test(
     config_str: str,
     target_host: str,
@@ -56,7 +94,7 @@ def tcp_ping_latency_test(
 ) -> Tuple[bool, Optional[float], Optional[str]]:
     """
     Performs a TCP ping and measures latency to target_host:target_port through the proxy.
-    Uses netcat (nc) for testing.
+    Uses netcat (nc) for testing on Unix-like systems and pure Python on Windows.
     Returns (success, latency_ms, error_message).
     """
     log_prefix = f"TCP [{config_str[:25]}... -> {target_host}:{target_port}]"
@@ -122,52 +160,58 @@ def tcp_ping_latency_test(
             cleanup_process(proxy_process, verbose)
             return False, None, error_msg
 
-        # 5. TCP connection attempt through proxy using netcat
-        start_time = time.time()
-        try:
-            # Convert timeout to integer seconds for nc -w
-            nc_timeout_sec = max(1, int(timeout))
-            # Netcat command for TCP connection check through SOCKS5
-            nc_cmd = [
-                "nc", "-z",
-                "-X", "5",
-                "-x", f"127.0.0.1:{socks_port}",
-                "-w", str(nc_timeout_sec),
-                target_host,
-                str(target_port)
-            ]
+        # 5. TCP connection attempt through proxy
+        # Выбираем метод в зависимости от ОС
+        if sys.platform == 'win32':
+            # Используем чистый Python для Windows
+            return tcp_ping_with_python(target_host, target_port, socks_port, timeout)
+        else:
+            # Используем netcat для Unix-подобных систем
+            start_time = time.time()
+            try:
+                # Convert timeout to integer seconds for nc -w
+                nc_timeout_sec = max(1, int(timeout))
+                # Netcat command for TCP connection check through SOCKS5
+                nc_cmd = [
+                    "nc", "-z",
+                    "-X", "5",
+                    "-x", f"127.0.0.1:{socks_port}",
+                    "-w", str(nc_timeout_sec),
+                    target_host,
+                    str(target_port)
+                ]
 
-            logging.debug(f"{log_prefix} Running nc for TCP test: {' '.join(nc_cmd)}")
-            ping_process = subprocess.run(
-                nc_cmd,
-                capture_output=True,
-                timeout=nc_timeout_sec + 2  # Add extra time for nc command execution
-            )
-            end_time = time.time()
-            latency = (end_time - start_time) * 1000  # in ms
+                logging.debug(f"{log_prefix} Running nc for TCP test: {' '.join(nc_cmd)}")
+                ping_process = subprocess.run(
+                    nc_cmd,
+                    capture_output=True,
+                    timeout=nc_timeout_sec + 2  # Add extra time for nc command execution
+                )
+                end_time = time.time()
+                latency = (end_time - start_time) * 1000  # in ms
 
-            if ping_process.returncode == 0:
-                logging.debug(f"{log_prefix} Successful connection (via nc -z), latency (approx.): {latency:.0f}ms")
-                return True, round(latency), None
-            else:
-                # Analyze nc error
-                nc_error = ping_process.stderr.decode('utf-8', errors='replace').strip()
-                error_msg = f"TCP Test via nc failed (code {ping_process.returncode}). Error: {nc_error[:100]}"
+                if ping_process.returncode == 0:
+                    logging.debug(f"{log_prefix} Successful connection (via nc -z), latency (approx.): {latency:.0f}ms")
+                    return True, round(latency), None
+                else:
+                    # Analyze nc error
+                    nc_error = ping_process.stderr.decode('utf-8', errors='replace').strip()
+                    error_msg = f"TCP Test via nc failed (code {ping_process.returncode}). Error: {nc_error[:100]}"
+                    logging.warning(f"{log_prefix} {error_msg}")
+                    return False, None, error_msg
+
+            except subprocess.TimeoutExpired:
+                error_msg = f"Timeout ({nc_timeout_sec + 2} sec) executing nc command"
                 logging.warning(f"{log_prefix} {error_msg}")
                 return False, None, error_msg
-
-        except subprocess.TimeoutExpired:
-            error_msg = f"Timeout ({nc_timeout_sec + 2} sec) executing nc command"
-            logging.warning(f"{log_prefix} {error_msg}")
-            return False, None, error_msg
-        except FileNotFoundError:
-            error_msg = "Command 'nc' (netcat) not found. TCP test failed."
-            logging.error(f"{log_prefix} {error_msg}")  # Critical error for this function
-            return False, None, error_msg
-        except Exception as e:
-            error_msg = f"Error executing nc or TCP connection: {type(e).__name__}: {str(e)[:100]}"
-            logging.warning(f"{log_prefix} {error_msg}")
-            return False, None, error_msg
+            except FileNotFoundError:
+                # Если netcat не найден, попробуем использовать Python-метод как запасной вариант
+                logging.warning(f"{log_prefix} Command 'nc' (netcat) not found. Falling back to Python implementation.")
+                return tcp_ping_with_python(target_host, target_port, socks_port, timeout)
+            except Exception as e:
+                error_msg = f"Error executing nc or TCP connection: {type(e).__name__}: {str(e)[:100]}"
+                logging.warning(f"{log_prefix} {error_msg}")
+                return False, None, error_msg
 
     except ValueError as e:  # Parsing/conversion error
         error_msg = f"Preparation error: {e}"

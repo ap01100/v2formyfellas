@@ -11,9 +11,9 @@ import requests
 import logging
 from typing import Dict, Any, Optional, List, Union
 
-from config import DEFAULT_TEST_URLS, DEFAULT_TIMEOUT, USER_AGENT, MULTIPLE_URL_MODE
-from utils import find_free_port, cleanup_process, cleanup_file, wait_for_port, get_temp_file_path
-from parsers import convert_to_singbox_config
+from filter.config import DEFAULT_TEST_URLS, DEFAULT_TIMEOUT, USER_AGENT, MULTIPLE_URL_MODE
+from filter.utils import find_free_port, cleanup_process, cleanup_file, wait_for_port, get_temp_file_path
+from filter.parsers import convert_to_singbox_config
 
 def perform_url_test(config_str: str, test_url: Union[str, List[str]], timeout: float, singbox_path: str, verbose: bool) -> Dict[str, Any]:
     """

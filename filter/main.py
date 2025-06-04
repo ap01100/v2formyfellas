@@ -13,19 +13,20 @@ from pathlib import Path
 from typing import List, Dict, Any, Union
 
 # Import modules
-from config import (
+from filter.config import (
     DEFAULT_TEST_URLS, DEFAULT_TIMEOUT, DEFAULT_WORKERS,
     DEFAULT_TCP_TEST_HOST, DEFAULT_TCP_TEST_PORT, DEFAULT_TCP_TIMEOUT,
     DEFAULT_IP_SERVICE_URL, DEFAULT_IP_SERVICE_TIMEOUT, DEFAULT_WORKERS_ADVANCED,
     SINGBOX_EXECUTABLE, MULTIPLE_URL_MODE
 )
-from utils import (
+from filter.utils import (
     check_ubuntu_compatibility, ensure_executable_permissions, remove_duplicates,
-    ensure_workfiles_dir, cleanup_all_temp_files, remove_duplicates_advanced
+    ensure_workfiles_dir, cleanup_all_temp_files, remove_duplicates_advanced,
+    find_singbox_executable
 )
-from url_tester import perform_url_test
-from advanced_tester import perform_advanced_test
-from parallel import run_url_tests_parallel, run_advanced_tests_parallel
+from filter.url_tester import perform_url_test
+from filter.advanced_tester import perform_advanced_test
+from filter.parallel import run_url_tests_parallel, run_advanced_tests_parallel
 
 def setup_logging(verbose: bool = False):
     """Configure logging based on verbosity."""
@@ -226,7 +227,7 @@ def main():
     # System options
     parser.add_argument(
         "--singbox-path",
-        default=SINGBOX_EXECUTABLE,
+        default=None,  # Изменено с SINGBOX_EXECUTABLE на None для автопоиска
         help="Path to sing-box executable"
     )
     parser.add_argument(
@@ -293,8 +294,16 @@ def main():
     logging.info(f"Testing URLs: {', '.join(test_urls)}")
     
     # Find sing-box executable
-    singbox_path = args.singbox_path or SINGBOX_EXECUTABLE
+    singbox_path = args.singbox_path
+    if not singbox_path:
+        # Автоматический поиск sing-box
+        singbox_path = find_singbox_executable()
+        if not singbox_path:
+            logging.error("sing-box executable not found. Please specify its path with --singbox-path")
+            return 1
+        
     ensure_executable_permissions(singbox_path)
+    logging.info(f"Using sing-box at: {singbox_path}")
     
     # Check system compatibility
     # Only on Linux systems
@@ -306,10 +315,14 @@ def main():
     logging.info(f"Loaded {len(configs)} configurations from {args.input_file}")
     
     # Remove duplicates
-    old_count = len(configs)
-    configs = remove_duplicates(configs)
-    if old_count != len(configs):
-        logging.info(f"Removed {old_count - len(configs)} duplicate configurations, {len(configs)} remain")
+    if not args.no_dedup:
+        old_count = len(configs)
+        if args.advanced_dedup:
+            configs = remove_duplicates_advanced(configs)
+        else:
+            configs = remove_duplicates(configs)
+        if old_count != len(configs):
+            logging.info(f"Removed {old_count - len(configs)} duplicate configurations, {len(configs)} remain")
     
     # Choose the appropriate number of workers
     workers = args.workers
@@ -364,7 +377,11 @@ def main():
             
         # Combine and deduplicate
         combined = existing_configs + working_configs
-        combined = remove_duplicates(combined)
+        if not args.no_dedup:
+            if args.advanced_dedup:
+                combined = remove_duplicates_advanced(combined)
+            else:
+                combined = remove_duplicates(combined)
         
         # Write back
         write_configs_to_file(combined, args.append_output)

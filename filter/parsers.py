@@ -9,7 +9,7 @@ import urllib.parse
 import re
 import logging
 from typing import Dict, Any
-from config import DEFAULT_SS_METHOD
+from filter.config import DEFAULT_SS_METHOD
 
 def parse_ss_config(config_str: str) -> Dict[str, Any]:
     """Parses Shadowsocks configuration (ss://)."""
@@ -270,16 +270,25 @@ def convert_to_singbox_config(config_str: str, socks_port: int, log_level: str =
 
     base_config["outbounds"].append(parsed_outbound)
     base_config["outbounds"].append({"type": "direct", "tag": "direct"})  # Keep direct
+    base_config["outbounds"].append({"type": "block", "tag": "block"})    # Add block outbound
+    
+    # Simplified routing configuration
     base_config["route"] = {
-        "rules": [{"protocol": ["dns"], "outbound": parsed_outbound["tag"]}, {"outbound": parsed_outbound["tag"]}],
+        "rules": [
+            {"inbound": ["socks-in"], "outbound": parsed_outbound["tag"]}
+        ],
         "final": parsed_outbound["tag"]
     }
+    
+    # Simplified DNS configuration
     base_config["dns"] = {
         "servers": [
-            {"tag": "proxy-dns", "address": "1.1.1.1", "detour": parsed_outbound["tag"]},
-            {"tag": "local-dns", "address": "8.8.8.8", "detour": "direct"},
-            {"tag": "block-dns", "address": "rcode://success"}
+            {"tag": "remote", "address": "1.1.1.1", "detour": parsed_outbound["tag"]},
+            {"tag": "local", "address": "8.8.8.8", "detour": "direct"}
         ],
-        "rules": [{"server": "proxy-dns"}], "strategy": "prefer_ipv4"
+        "rules": [],
+        "final": "remote",
+        "strategy": "prefer_ipv4"
     }
+    
     return base_config 

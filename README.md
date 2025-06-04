@@ -15,30 +15,42 @@ And tool for testing and filtering working proxy configurations for various prot
 - Parallel test execution for increased speed
 - Support for multiple proxy protocols (SS, Trojan, VMess, VLESS)
 - Consolidated command-line interface for all types of testing
+- **Улучшенная поддержка Windows** - работает без netcat, автоматический поиск sing-box
+- **Оптимизированное параллельное выполнение** - автоопределение оптимального числа потоков
+- **Автоматическая установка** - скрипт setup.py для установки зависимостей и sing-box
 
 ## Requirements
 
 - Python 3.6+
 - sing-box (https://github.com/SagerNet/sing-box)
-- netcat (nc) for advanced TCP testing
-- Python dependencies: requests
+- Python dependencies: requests, PySocks
 
 ## Installation
+
+### Automatic Installation (Recommended)
+
+Run the setup script to install dependencies and configure sing-box:
+
+```bash
+python setup.py
+```
+
+### Manual Installation
 
 1. Clone the repository:
 ```bash
 git clone https://github.com/ap01100/v2formyfellas.git
-cd v2formyfellas/filter
+cd v2formyfellas
 ```
 
 2. Install Python dependencies:
 ```bash
-pip install requests
+pip install -r requirements.txt
 ```
 
 3. Make sure sing-box is installed and available in PATH or specify its path when running.
 
-4. For advanced testing, install netcat:
+4. For advanced testing on Unix systems, install netcat:
 ```bash
 # Ubuntu/Debian
 sudo apt install netcat-traditional
@@ -51,29 +63,36 @@ sudo apt install netcat-openbsd
 ### Basic URL Testing
 
 ```bash
-python main.py input.txt -o working.txt
+python filter/main.py input.txt -o working.txt
 ```
 
 ### Advanced Testing
 
 ```bash
-python main.py input.txt -o working.txt -a
+python filter/main.py input.txt -o working.txt -a
 ```
 
 ### Combined Testing (URL, then Advanced)
 
 ```bash
-python main.py input.txt -o advanced_working.txt --url-then-advanced --temp-file url_working.txt
+python filter/main.py input.txt -o advanced_working.txt --url-then-advanced --temp-file url_working.txt
 ```
+
+### Windows Users
+
+See [WINDOWS_README.md](WINDOWS_README.md) for detailed Windows-specific instructions.
 
 ### Command Line Parameters
 
 ```
-usage: main.py [-h] [-o OUTPUT_FILE] [-ao APPEND_OUTPUT] [-u URL] [-t TIMEOUT] [-w WORKERS] [-a]
-               [--tcp-host TCP_HOST] [--tcp-port TCP_PORT] [--tcp-timeout TCP_TIMEOUT]
-               [--ip-service-url IP_SERVICE_URL] [--ip-service-timeout IP_SERVICE_TIMEOUT]
-               [--advanced-workers ADVANCED_WORKERS] [--singbox-path SINGBOX_PATH] [-v]
-               [--no-dedup] [--url-then-advanced] [--temp-file TEMP_FILE]
+usage: main.py [-h] [-o OUTPUT_FILE] [-ao APPEND_OUTPUT] [-u URL]
+               [--urls-file URLS_FILE] [--url-mode {all,any}] [-t TIMEOUT]
+               [-w WORKERS] [-a] [--tcp-host TCP_HOST] [--tcp-port TCP_PORT]
+               [--tcp-timeout TCP_TIMEOUT] [--ip-service-url IP_SERVICE_URL]
+               [--ip-service-timeout IP_SERVICE_TIMEOUT]
+               [--advanced-workers ADVANCED_WORKERS] [--singbox-path SINGBOX_PATH]
+               [-v] [--no-dedup] [--advanced-dedup] [--url-then-advanced]
+               [--temp-file TEMP_FILE]
                input_file
 
 Test proxy configurations using URL testing and advanced testing.
@@ -87,7 +106,10 @@ options:
                         File to save working configurations
   -ao APPEND_OUTPUT, --append-output APPEND_OUTPUT
                         Append working configurations to this file instead of overwriting
-  -u URL, --url URL     URL to test proxies against
+  -u URL, --url URL     URL to test proxies against (can be specified multiple times)
+  --urls-file URLS_FILE
+                        Path to a file containing URLs to test, one URL per line
+  --url-mode {all,any}  URL testing mode: 'all' means all URLs must work, 'any' means at least one URL must work
   -t TIMEOUT, --timeout TIMEOUT
                         Request timeout in seconds
   -w WORKERS, --workers WORKERS
@@ -107,6 +129,7 @@ options:
                         Path to sing-box executable
   -v, --verbose         Enable verbose logging (DEBUG level)
   --no-dedup            Skip deduplication of input configurations
+  --advanced-dedup      Use advanced deduplication (ignores configuration names during comparison)
   --url-then-advanced   Run URL testing first, then advanced testing on working configurations
   --temp-file TEMP_FILE Temporary file to store intermediate results from URL testing
 ```
@@ -120,6 +143,7 @@ options:
 - `url_tester.py` - URL testing module
 - `advanced_tester.py` - advanced testing module (TCP, IP)
 - `parallel.py` - utilities for parallel execution
+- `setup.py` - installation and setup script
 
 ## Extension
 

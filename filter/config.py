@@ -22,7 +22,7 @@ DEFAULT_IP_SERVICE_TIMEOUT = 10  # Timeout for IP service request
 DEFAULT_WORKERS_ADVANCED = 5  # Number of threads for advanced testing
 
 # System settings
-SINGBOX_EXECUTABLE = "sing-box"  # Assuming sing-box is in PATH or specify full path
+SINGBOX_EXECUTABLE = "D:\nekoray\v2formyfellas\bin\sing-box.exe"  # Auto-updated by setup.py
 ADVANCED_TEST_SCRIPT = "advanced_test.py"  # Assuming it's in the same directory
 
 # User agent for HTTP requests

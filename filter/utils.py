@@ -9,9 +9,11 @@ import time
 import subprocess
 import logging
 import tempfile
+import sys
 from typing import Optional, List
 from contextlib import contextmanager
-from config import MAX_WAIT_TIME, SOCKET_CHECK_INTERVAL, MAX_ERROR_OUTPUT_LEN
+from filter.config import MAX_WAIT_TIME, SOCKET_CHECK_INTERVAL, MAX_ERROR_OUTPUT_LEN
+from filter.parsers import parse_ss_config, parse_trojan_config, parse_vmess_config, parse_vless_config
 
 # Define workfiles directory path
 WORKFILES_DIR = "workfiles"
@@ -40,6 +42,65 @@ def get_temp_file_path(prefix="temp", port=None, suffix=".json"):
     else:
         filename = f"{prefix}_{int(time.time())}{suffix}"
     return os.path.join(WORKFILES_DIR, filename)
+
+def find_singbox_executable() -> Optional[str]:
+    """
+    Ищет исполняемый файл sing-box в системе.
+    Проверяет стандартные места установки в зависимости от ОС.
+    
+    Returns:
+        Путь к найденному исполняемому файлу sing-box или None, если не найден
+    """
+    # Список возможных имен исполняемого файла
+    executable_names = ["sing-box"]
+    if sys.platform == 'win32':
+        executable_names.append("sing-box.exe")
+    
+    # Проверяем наличие в PATH
+    for name in executable_names:
+        try:
+            # На Windows используем where, на Unix - which
+            if sys.platform == 'win32':
+                result = subprocess.run(["where", name], capture_output=True, text=True)
+            else:
+                result = subprocess.run(["which", name], capture_output=True, text=True)
+            
+            if result.returncode == 0 and result.stdout.strip():
+                path = result.stdout.strip().split('\n')[0]  # Берем первый результат
+                logging.info(f"Found sing-box at: {path}")
+                return path
+        except Exception as e:
+            logging.debug(f"Error searching for {name} in PATH: {e}")
+    
+    # Проверяем стандартные места установки
+    common_paths = []
+    if sys.platform == 'win32':
+        # Windows пути
+        program_files = os.environ.get("ProgramFiles", "C:\\Program Files")
+        program_files_x86 = os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")
+        common_paths.extend([
+            os.path.join(program_files, "sing-box", "sing-box.exe"),
+            os.path.join(program_files_x86, "sing-box", "sing-box.exe"),
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "sing-box", "sing-box.exe"),
+            ".\\sing-box.exe",  # В текущей директории
+        ])
+    else:
+        # Unix пути
+        common_paths.extend([
+            "/usr/local/bin/sing-box",
+            "/usr/bin/sing-box",
+            "/opt/sing-box/sing-box",
+            "./sing-box",  # В текущей директории
+        ])
+    
+    # Проверяем каждый путь
+    for path in common_paths:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            logging.info(f"Found sing-box at: {path}")
+            return path
+    
+    logging.warning("sing-box executable not found in common locations")
+    return None
 
 def check_ubuntu_compatibility():
     """Checks compatibility with Ubuntu 22.04."""
@@ -207,8 +268,6 @@ def remove_duplicates_advanced(configs: List[str]) -> List[str]:
     """
     if not configs:
         return []
-    
-    from parsers import parse_ss_config, parse_trojan_config, parse_vmess_config, parse_vless_config
     
     logging.info(f"Removing duplicates (advanced mode) from {len(configs)} configurations...")
     unique_configs = []

@@ -1,0 +1,9 @@
+# Пример файла с источниками конфигураций для download_configs.py
+# Каждая строка может быть URL или путем к локальному файлу
+# Строки, начинающиеся с #, игнорируются
+
+# Публичные подписки (примеры)
+https://raw.githubusercontent.com/ap01100/v2formyfellas/refs/heads/main/configs.txt
+
+# Локальные файлы (примеры)
+# tested.txt 
