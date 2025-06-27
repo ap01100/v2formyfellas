@@ -1,188 +1,217 @@
 #!/usr/bin/env python3
 """
-Единый скрипт для запуска всех операций v2formyfellas:
-1. Скачивание конфигураций
-2. Базовое URL-тестирование
-3. Расширенное тестирование
+Unified script for downloading and testing proxy configurations.
+Combines functionality of download.py and main.py.
 """
 
 import os
 import sys
-import argparse
+import time
 import logging
-import datetime
-import platform
-import subprocess
-from pathlib import Path
+import argparse
+import signal
+from typing import List, Dict, Any
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Import modules
+from filter.download import process_subscription, process_sources_file
+from filter.main import test_configs, setup_logging
+from filter.url_tester import shutdown_process_manager
+from filter.utils import (
+    find_singbox_executable, ensure_executable_permissions, remove_duplicates,
+    ensure_workfiles_dir, cleanup_all_temp_files, remove_duplicates_advanced
+)
+from filter.config import (
+    DEFAULT_TEST_URLS, DEFAULT_TIMEOUT, DEFAULT_WORKERS,
+    DEFAULT_TCP_TEST_HOST, DEFAULT_TCP_TEST_PORT, DEFAULT_TCP_TIMEOUT,
+    DEFAULT_IP_SERVICE_URL, DEFAULT_IP_SERVICE_TIMEOUT, DEFAULT_WORKERS_ADVANCED,
+    SINGBOX_EXECUTABLE
+)
 
-def ensure_directory(directory):
-    """Создает директорию, если она не существует."""
-    os.makedirs(directory, exist_ok=True)
+def setup_signal_handlers():
+    """Setup signal handlers for graceful shutdown."""
+    def signal_handler(sig, frame):
+        logging.info("Interrupted by user. Cleaning up...")
+        cleanup_all_temp_files()
+        shutdown_process_manager()  # Завершаем работу менеджера процессов
+        sys.exit(0)
     
-def get_singbox_path():
-    """Определяет путь к исполняемому файлу sing-box."""
-    system = platform.system()
-    if system == "Windows":
-        singbox_path = os.path.join("bin", "sing-box.exe")
-    else:
-        singbox_path = os.path.join("bin", "sing-box")
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+def download_configs(sources_file: str, output_file: str, verbose: bool = False) -> List[str]:
+    """
+    Download configurations from sources and save them to output file.
     
-    if not os.path.exists(singbox_path):
-        logging.error(f"sing-box не найден по пути: {singbox_path}")
-        logging.info("Установите sing-box в директорию bin/ или укажите путь с помощью --singbox-path")
-        return None
+    Args:
+        sources_file: File with list of sources
+        output_file: File to save downloaded configurations
+        verbose: Enable verbose logging
         
-    return singbox_path
+    Returns:
+        List of downloaded configurations
+    """
+    logging.info(f"Downloading configurations from sources in {sources_file}...")
+    configs = process_sources_file(sources_file)
+    
+    # Deduplicate
+    original_count = len(configs)
+    configs = remove_duplicates(configs)
+    logging.info(f"Removed {original_count - len(configs)} duplicate configurations, {len(configs)} remaining")
+    
+    # Save to file
+    try:
+        with open(output_file, 'w', encoding='utf-8') as f:
+            for config in configs:
+                f.write(f"{config}\n")
+        logging.info(f"Saved {len(configs)} configurations to {output_file}")
+    except Exception as e:
+        logging.error(f"Error saving configurations to {output_file}: {e}")
+        sys.exit(1)
+    
+    return configs
+
+def save_configs(configs: List[str], output_file: str):
+    """
+    Save configurations to a file.
+    
+    Args:
+        configs: List of configurations
+        output_file: File to save configurations
+    """
+    try:
+        with open(output_file, 'w', encoding='utf-8') as f:
+            for config in configs:
+                f.write(f"{config}\n")
+        logging.info(f"Saved {len(configs)} configurations to {output_file}")
+    except Exception as e:
+        logging.error(f"Error saving configurations to {output_file}: {e}")
+        sys.exit(1)
 
 def main():
+    """Main function."""
+    # Setup signal handlers
+    setup_signal_handlers()
+    
+    # Parse command line arguments
     parser = argparse.ArgumentParser(
-        description="v2formyfellas - Скачивание и тестирование прокси-конфигураций"
+        description="Download and test proxy configurations",
+        epilog="Note: Testing can be interrupted at any time by pressing Ctrl+C. All temporary files will be cleaned up.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
-    parser.add_argument(
-        "-s", "--sources", 
-        default="filter/sources.txt",
-        help="Файл со списком источников конфигураций (по умолчанию: filter/sources.txt)"
-    )
-    parser.add_argument(
-        "-w", "--workers", 
-        type=int, 
-        default=30,
-        help="Количество параллельных потоков для тестирования (по умолчанию: 30)"
-    )
-    parser.add_argument(
-        "--singbox-path", 
-        help="Путь к исполняемому файлу sing-box"
-    )
-    parser.add_argument(
-        "--skip-download", 
-        action="store_true",
-        help="Пропустить этап скачивания конфигураций"
-    )
-    parser.add_argument(
-        "--skip-url-test", 
-        action="store_true",
-        help="Пропустить этап URL-тестирования"
-    )
-    parser.add_argument(
-        "--skip-advanced-test", 
-        action="store_true",
-        help="Пропустить этап расширенного тестирования"
-    )
-    parser.add_argument(
-        "-v", "--verbose", 
-        action="store_true",
-        help="Подробный вывод"
-    )
+    # Sources and output
+    parser.add_argument("-s", "--sources", default="sources.txt",
+                        help="File with list of configuration sources")
+    parser.add_argument("-o", "--output", default="working.txt",
+                        help="File to save working configurations")
+    parser.add_argument("-c", "--configs", default="configs.txt",
+                        help="File to save downloaded configurations")
+    
+    # Performance options
+    parser.add_argument("-w", "--workers", type=int, default=DEFAULT_WORKERS,
+                        help="Number of parallel workers for testing")
+    
+    # System options
+    parser.add_argument("--singbox-path", help="Path to sing-box executable")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+    
+    # Flow control
+    parser.add_argument("--skip-download", action="store_true",
+                        help="Skip configuration download step")
+    parser.add_argument("--skip-url-test", action="store_true",
+                        help="Skip URL testing step")
+    parser.add_argument("--skip-advanced-test", action="store_true",
+                        help="Skip advanced testing step")
+    parser.add_argument("--temp-file", default="url_working.txt",
+                        help="Temporary file for URL testing results")
     
     args = parser.parse_args()
     
-    # Настройка уровня логирования
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
+    # Configure logging
+    setup_logging(args.verbose)
     
-    # Создаем директорию для результатов, если она не существует
-    ensure_directory("results")
+    # Create workfiles directory if it doesn't exist
+    ensure_workfiles_dir()
     
-    # Получаем текущую дату и время для имен файлов
-    now = datetime.datetime.now()
-    datestamp = now.strftime("%Y%m%d")
-    timestamp = now.strftime("%H%M%S")
-    
-    # Формируем имена файлов
-    configs_file = f"results/configs_{datestamp}_{timestamp}.txt"
-    url_working_file = f"results/working_url_{datestamp}.txt"
-    advanced_working_file = f"results/working_advanced_{datestamp}.txt"
-    
-    # Определяем путь к sing-box
-    singbox_path = args.singbox_path or get_singbox_path()
-    if not singbox_path and not (args.skip_url_test and args.skip_advanced_test):
+    # Auto-detect sing-box executable if not specified
+    singbox_path = args.singbox_path or find_singbox_executable() or SINGBOX_EXECUTABLE
+    if not os.path.isfile(singbox_path):
+        logging.error(f"sing-box executable not found at {singbox_path}")
+        logging.error("Please specify the correct path with --singbox-path or install sing-box")
         return 1
     
-    # 1. Скачивание конфигураций
-    if not args.skip_download:
-        logging.info("=== Скачивание конфигураций ===")
-        download_cmd = [
-            sys.executable, "-m", "filter", "download",
-            "-s", args.sources, "-o", configs_file
-        ]
-        
-        if args.verbose:
-            download_cmd.append("-v")
-            
-        logging.debug(f"Выполняется команда: {' '.join(download_cmd)}")
-        download_result = subprocess.run(download_cmd)
-        
-        if download_result.returncode != 0:
-            logging.error("Ошибка при скачивании конфигураций!")
-            return 1
-    else:
-        logging.info("Этап скачивания конфигураций пропущен.")
-        # Проверяем существование файла только если нужны последующие этапы
-        if not (args.skip_url_test and args.skip_advanced_test) and not os.path.exists(configs_file):
-            logging.error(f"Файл конфигураций {configs_file} не существует!")
-            return 1
+    # Ensure sing-box is executable (on Unix)
+    ensure_executable_permissions(singbox_path)
+    logging.info(f"Using sing-box executable: {singbox_path}")
     
-    # 2. Базовое URL-тестирование
-    if not args.skip_url_test:
-        logging.info("=== Запуск базового URL-тестирования ===")
-        url_test_cmd = [
-            sys.executable, "-m", "filter", "test",
-            configs_file, "-o", url_working_file,
-            "-w", str(args.workers), "--singbox-path", singbox_path
-        ]
-        
-        if args.verbose:
-            url_test_cmd.append("-v")
+    try:
+        # Step 1: Download configurations
+        if not args.skip_download:
+            if not os.path.isfile(args.sources):
+                logging.error(f"Sources file not found: {args.sources}")
+                return 1
             
-        logging.debug(f"Выполняется команда: {' '.join(url_test_cmd)}")
-        url_test_result = subprocess.run(url_test_cmd)
+            configs = download_configs(args.sources, args.configs, args.verbose)
+            logging.info(f"Downloaded {len(configs)} configurations")
+        else:
+            logging.info("Skipping download step")
+            # Read configurations from file
+            try:
+                with open(args.configs, 'r', encoding='utf-8') as f:
+                    configs = [line.strip() for line in f.readlines() if line.strip() and not line.strip().startswith('#')]
+                logging.info(f"Read {len(configs)} configurations from {args.configs}")
+            except FileNotFoundError:
+                logging.error(f"Configurations file not found: {args.configs}")
+                return 1
+            except Exception as e:
+                logging.error(f"Error reading configurations file: {e}")
+                return 1
         
-        if url_test_result.returncode != 0:
-            logging.warning("Внимание: URL-тестирование не нашло рабочих конфигураций.")
-    else:
-        logging.info("Этап базового URL-тестирования пропущен.")
-    
-    # 3. Расширенное тестирование
-    if not args.skip_advanced_test:
-        logging.info("=== Запуск расширенного тестирования ===")
-        
-        # Определяем входной файл для расширенного тестирования
-        input_file = url_working_file if not args.skip_url_test else configs_file
-        
-        if not os.path.exists(input_file):
-            logging.error(f"Файл {input_file} не существует!")
-            return 1
+        # Step 2: URL Testing
+        if not args.skip_url_test:
+            logging.info(f"Performing URL testing on {len(configs)} configurations...")
+            url_results = test_configs(
+                configs, singbox_path, DEFAULT_TEST_URLS, DEFAULT_TIMEOUT, args.workers, args.verbose,
+                advanced_test=False
+            )
             
-        advanced_test_cmd = [
-            sys.executable, "-m", "filter", "test",
-            input_file, "-o", advanced_working_file, "-a",
-            "-w", str(args.workers), "--singbox-path", singbox_path
-        ]
-        
-        if args.verbose:
-            advanced_test_cmd.append("-v")
+            # Save intermediate results
+            save_configs(url_results["working"], args.temp_file)
+            logging.info(f"URL testing found {len(url_results['working'])} working configurations")
             
-        logging.debug(f"Выполняется команда: {' '.join(advanced_test_cmd)}")
-        advanced_test_result = subprocess.run(advanced_test_cmd)
+            # Use URL results for advanced testing
+            configs = url_results["working"]
+        else:
+            logging.info("Skipping URL testing step")
         
-        if advanced_test_result.returncode != 0:
-            logging.warning("Внимание: Расширенное тестирование не нашло рабочих конфигураций.")
-    else:
-        logging.info("Этап расширенного тестирования пропущен.")
-    
-    # Выводим итоговую информацию
-    logging.info("=== Готово! ===")
-    logging.info(f"Все конфигурации: {configs_file}")
-    
-    if not args.skip_url_test and os.path.exists(url_working_file):
-        logging.info(f"Рабочие URL-конфигурации: {url_working_file}")
+        # Step 3: Advanced Testing
+        if not args.skip_advanced_test:
+            logging.info(f"Performing advanced testing on {len(configs)} configurations...")
+            advanced_results = test_configs(
+                configs, singbox_path, DEFAULT_TEST_URLS, DEFAULT_TIMEOUT, args.workers, args.verbose,
+                advanced_test=True, tcp_host=DEFAULT_TCP_TEST_HOST, tcp_port=DEFAULT_TCP_TEST_PORT,
+                tcp_timeout=DEFAULT_TCP_TIMEOUT, ip_service_url=DEFAULT_IP_SERVICE_URL,
+                ip_service_timeout=DEFAULT_IP_SERVICE_TIMEOUT
+            )
+            
+            # Save final results
+            save_configs(advanced_results["working"], args.output)
+            logging.info(f"Advanced testing found {len(advanced_results['working'])} working configurations")
+        else:
+            logging.info("Skipping advanced testing step")
+            # If URL testing was done but advanced testing skipped, save URL results as final
+            if not args.skip_url_test:
+                save_configs(configs, args.output)
         
-    if not args.skip_advanced_test and os.path.exists(advanced_working_file):
-        logging.info(f"Рабочие расширенные конфигурации: {advanced_working_file}")
+        logging.info("All steps completed successfully")
+        
+    except Exception as e:
+        logging.error(f"Error during execution: {e}", exc_info=args.verbose)
+        return 1
+    finally:
+        # Cleanup
+        cleanup_all_temp_files()
+        shutdown_process_manager()  # Завершаем работу менеджера процессов
     
     return 0
 

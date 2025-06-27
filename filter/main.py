@@ -25,7 +25,7 @@ from filter.utils import (
     ensure_workfiles_dir, cleanup_all_temp_files, remove_duplicates_advanced,
     find_singbox_executable, ensure_directory
 )
-from filter.url_tester import perform_url_test
+from filter.url_tester import perform_url_test, shutdown_process_manager
 from filter.advanced_tester import perform_advanced_test
 from filter.parallel import run_url_tests_parallel, run_advanced_tests_parallel
 
@@ -78,22 +78,6 @@ def read_urls_from_file(file_path: str) -> List[str]:
         sys.exit(1)
     except Exception as e:
         logging.error(f"Error reading URL file {file_path}: {e}")
-        sys.exit(1)
-
-def write_configs_to_file(configs: List[str], file_path: str):
-    """Write proxy configurations to a file."""
-    try:
-        # Безопасно создаем директорию, если она не существует
-        directory = os.path.dirname(os.path.abspath(file_path))
-        if directory:  # Проверяем, что путь не пустой
-            ensure_directory(directory)
-            
-        with open(file_path, 'w', encoding='utf-8') as f:
-            for config in configs:
-                f.write(f"{config}\n")
-        logging.info(f"Wrote {len(configs)} configurations to {file_path}")
-    except Exception as e:
-        logging.error(f"Error writing to file {file_path}: {e}")
         sys.exit(1)
 
 def test_configs(
@@ -157,118 +141,79 @@ def test_configs(
             use_http_proxy=use_http_proxy
         )
 
-def main():
-    global MULTIPLE_URL_MODE
-    # Добавляем обработчик сигнала SIGINT (Ctrl+C)
+def save_configs(configs: List[str], output_file: str, append: bool = False):
+    """Save configurations to a file."""
+    mode = 'a' if append else 'w'
+    try:
+        with open(output_file, mode, encoding='utf-8') as f:
+            for config in configs:
+                f.write(f"{config}\n")
+        logging.info(f"Saved {len(configs)} configurations to {output_file}")
+    except Exception as e:
+        logging.error(f"Error saving configurations to {output_file}: {e}")
+        sys.exit(1)
+
+def setup_signal_handlers():
+    """Setup signal handlers for graceful shutdown."""
     def signal_handler(sig, frame):
-        logging.warning("\nПолучен сигнал прерывания (Ctrl+C). Завершение работы...")
-        # Очищаем временные файлы перед выходом
+        logging.info("Interrupted by user. Cleaning up...")
         cleanup_all_temp_files()
-        sys.exit(130)  # 130 - стандартный код выхода для SIGINT
-        
-    # Регистрируем обработчик
+        shutdown_process_manager()  # Завершаем работу менеджера процессов
+        sys.exit(0)
+    
     signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+def main():
+    """Main function."""
+    # Setup signal handlers
+    setup_signal_handlers()
     
+    # Parse command line arguments
     parser = argparse.ArgumentParser(
-        description="Test proxy configurations using URL testing and advanced testing.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-        epilog="Примечание: Тестирование можно прервать в любой момент, нажав Ctrl+C. Все временные файлы будут очищены."
+        description="Test proxy configurations",
+        epilog="Note: Testing can be interrupted at any time by pressing Ctrl+C. All temporary files will be cleaned up.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
-    # Input/output arguments
-    parser.add_argument(
-        "input_file",
-        help="File containing proxy configurations to test"
-    )
-    parser.add_argument(
-        "-o", "--output-file",
-        help="File to save working configurations"
-    )
-    parser.add_argument(
-        "-ao", "--append-output",
-        help="Append working configurations to this file instead of overwriting"
-    )
+    # Required arguments
+    parser.add_argument("input_file", help="File with proxy configurations to test")
     
-    # Testing options
-    parser.add_argument(
-        "-u", "--url",
-        action="append",
-        help="URL to test proxies against (can be specified multiple times)"
-    )
-    parser.add_argument(
-        "--urls-file",
-        help="Path to a file containing URLs to test, one URL per line"
-    )
-    parser.add_argument(
-        "--url-mode",
-        choices=["all", "any"],
-        default=MULTIPLE_URL_MODE,
-        help="URL testing mode: 'all' requires all URLs to pass, 'any' requires at least one"
-    )
-    parser.add_argument(
-        "-t", "--timeout",
-        type=float,
-        default=DEFAULT_TIMEOUT,
-        help="Request timeout in seconds"
-    )
-    parser.add_argument(
-        "-w", "--workers",
-        type=int,
-        default=DEFAULT_WORKERS,
-        help="Number of parallel workers for testing"
-    )
+    # Output options
+    parser.add_argument("-o", "--output-file", help="File to save working configurations to")
+    parser.add_argument("-ao", "--append-output", help="Append working configurations to this file")
+    
+    # URL testing options
+    parser.add_argument("-u", "--url", action="append", help="URL to test (can be specified multiple times)")
+    parser.add_argument("--urls-file", help="File with URLs to test, one URL per line")
+    parser.add_argument("--url-mode", choices=["all", "any"], default=MULTIPLE_URL_MODE,
+                        help="URL testing mode: 'all' requires all URLs to be accessible, 'any' requires at least one")
+    parser.add_argument("-t", "--timeout", type=float, default=DEFAULT_TIMEOUT,
+                        help="Timeout for URL tests in seconds")
     
     # Advanced testing options
-    parser.add_argument(
-        "-a", "--advanced",
-        action="store_true",
-        help="Perform advanced testing (TCP latency, IP detection) instead of URL testing"
-    )
-    parser.add_argument(
-        "--tcp-host",
-        default=DEFAULT_TCP_TEST_HOST,
-        help="Host for TCP ping/latency tests in advanced mode"
-    )
-    parser.add_argument(
-        "--tcp-port",
-        type=int,
-        default=DEFAULT_TCP_TEST_PORT,
-        help="Port for TCP ping/latency tests in advanced mode"
-    )
-    parser.add_argument(
-        "--tcp-timeout",
-        type=float,
-        default=DEFAULT_TCP_TIMEOUT,
-        help="Timeout for TCP tests in advanced mode"
-    )
-    parser.add_argument(
-        "--ip-service-url",
-        default=DEFAULT_IP_SERVICE_URL,
-        help="URL for IP detection service in advanced mode"
-    )
-    parser.add_argument(
-        "--ip-service-timeout",
-        type=float,
-        default=DEFAULT_IP_SERVICE_TIMEOUT,
-        help="Timeout for IP service requests in advanced mode"
-    )
-    parser.add_argument(
-        "--advanced-workers",
-        type=int,
-        default=DEFAULT_WORKERS_ADVANCED,
-        help="Number of parallel workers for advanced testing"
-    )
+    parser.add_argument("-a", "--advanced", action="store_true",
+                        help="Perform advanced testing (TCP, IP) instead of URL testing")
+    parser.add_argument("--tcp-host", default=DEFAULT_TCP_TEST_HOST,
+                        help="Host for TCP tests (advanced only)")
+    parser.add_argument("--tcp-port", type=int, default=DEFAULT_TCP_TEST_PORT,
+                        help="Port for TCP tests (advanced only)")
+    parser.add_argument("--tcp-timeout", type=float, default=DEFAULT_TCP_TIMEOUT,
+                        help="Timeout for TCP tests in seconds (advanced only)")
+    parser.add_argument("--ip-service-url", default=DEFAULT_IP_SERVICE_URL,
+                        help="URL for IP service (advanced only)")
+    parser.add_argument("--ip-service-timeout", type=float, default=DEFAULT_IP_SERVICE_TIMEOUT,
+                        help="Timeout for IP service in seconds (advanced only)")
+    
+    # Performance options
+    parser.add_argument("-w", "--workers", type=int, default=DEFAULT_WORKERS,
+                        help="Number of parallel workers for URL testing")
+    parser.add_argument("--advanced-workers", type=int, default=DEFAULT_WORKERS_ADVANCED,
+                        help="Number of parallel workers for advanced testing")
     
     # System options
-    parser.add_argument(
-        "--singbox-path",
-        help="Path to sing-box executable (will be auto-detected if not specified)"
-    )
-    parser.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        help="Enable verbose output"
-    )
+    parser.add_argument("--singbox-path", help="Path to sing-box executable")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     
     # Additional options
     parser.add_argument(
@@ -318,143 +263,86 @@ def main():
     # Read configurations from input file
     configs = read_configs_from_file(args.input_file)
     
-    # Deduplicate configurations if not disabled
+    # Deduplicate configurations if needed
     if not args.no_dedup:
+        original_count = len(configs)
         if args.advanced_dedup:
-            logging.info("Performing advanced deduplication...")
-            original_count = len(configs)
             configs = remove_duplicates_advanced(configs)
-            logging.info(f"Removed {original_count - len(configs)} duplicate configurations "
-                         f"({len(configs)} unique configurations remaining)")
         else:
-            logging.info("Performing basic deduplication...")
-            original_count = len(configs)
             configs = remove_duplicates(configs)
-            logging.info(f"Removed {original_count - len(configs)} duplicate configurations "
-                         f"({len(configs)} unique configurations remaining)")
+        logging.info(f"Removed {original_count - len(configs)} duplicate configurations, {len(configs)} remaining")
     
     # Determine URLs to test
     test_urls = DEFAULT_TEST_URLS
     if args.url:
         test_urls = args.url
-        logging.info(f"Using {len(test_urls)} URLs from command line arguments")
     elif args.urls_file:
         test_urls = read_urls_from_file(args.urls_file)
-        logging.info(f"Using {len(test_urls)} URLs from file: {args.urls_file}")
     
-    # Handle --url-mode parameter
-    if args.url_mode:
-        MULTIPLE_URL_MODE = args.url_mode
-        logging.info(f"URL testing mode: {MULTIPLE_URL_MODE}")
+    logging.info(f"Using {len(test_urls)} URLs for testing: {', '.join(test_urls)}")
     
-    # Perform tests based on selected mode
-    if args.url_then_advanced:
-        # First URL testing, then advanced testing on working configs
-        logging.info(f"Step 1: Performing URL testing on {len(configs)} configurations...")
-        
-        url_results = test_configs(
-            configs=configs,
-            singbox_path=singbox_path,
-            test_url=test_urls,
-            timeout=args.timeout,
-            workers=args.workers,
-            verbose=args.verbose,
-            use_http_proxy=args.use_http_proxy
-        )
-        
-        working_configs = url_results["working"]
-        if not working_configs:
-            logging.warning("No working configurations found in URL testing. Skipping advanced testing.")
-        else:
-            # Save intermediate results if temp file specified
-            if args.temp_file:
-                write_configs_to_file(working_configs, args.temp_file)
-                logging.info(f"Saved {len(working_configs)} URL-tested configurations to {args.temp_file}")
-            
-            # Perform advanced testing on working configs
-            logging.info(f"Step 2: Performing advanced testing on {len(working_configs)} configurations...")
-            
-            advanced_results = test_configs(
-                configs=working_configs,
-                singbox_path=singbox_path,
-                test_url=test_urls,  # Not used in advanced testing
-                timeout=args.timeout,
-                workers=args.advanced_workers or DEFAULT_WORKERS_ADVANCED,
-                verbose=args.verbose,
-                advanced_test=True,
-                tcp_host=args.tcp_host,
-                tcp_port=args.tcp_port,
-                tcp_timeout=args.tcp_timeout,
-                ip_service_url=args.ip_service_url,
-                ip_service_timeout=args.ip_service_timeout
+    try:
+        # Perform testing
+        if args.url_then_advanced:
+            # First do URL testing
+            logging.info(f"Performing URL testing on {len(configs)} configurations...")
+            url_results = test_configs(
+                configs, singbox_path, test_urls, args.timeout, args.workers, args.verbose,
+                advanced_test=False, use_http_proxy=args.use_http_proxy
             )
             
-            working_configs = advanced_results["working"]
-    else:
-        # Single testing mode (either URL or advanced)
-        if args.advanced:
-            logging.info(f"Performing advanced testing on {len(configs)} configurations...")
-            workers = args.advanced_workers or DEFAULT_WORKERS_ADVANCED
+            # Save intermediate results if temp file specified
+            if args.temp_file:
+                save_configs(url_results["working"], args.temp_file)
+                logging.info(f"Saved {len(url_results['working'])} working configurations from URL test to {args.temp_file}")
+            
+            # Then do advanced testing on working configs
+            logging.info(f"Performing advanced testing on {len(url_results['working'])} configurations that passed URL test...")
+            advanced_results = test_configs(
+                url_results["working"], singbox_path, test_urls, args.timeout, args.advanced_workers, args.verbose,
+                advanced_test=True, tcp_host=args.tcp_host, tcp_port=args.tcp_port, tcp_timeout=args.tcp_timeout,
+                ip_service_url=args.ip_service_url, ip_service_timeout=args.ip_service_timeout
+            )
+            
+            # Final results are from advanced testing
+            results = advanced_results
+            logging.info(f"URL testing found {len(url_results['working'])} working configurations")
+            logging.info(f"Advanced testing found {len(results['working'])} working configurations")
+            
         else:
-            logging.info(f"Performing URL testing on {len(configs)} configurations...")
-            workers = args.workers
+            # Do either URL testing or advanced testing
+            logging.info(f"Performing {'advanced' if args.advanced else 'URL'} testing on {len(configs)} configurations...")
+            results = test_configs(
+                configs, singbox_path, test_urls, args.timeout, 
+                args.advanced_workers if args.advanced else args.workers, 
+                args.verbose, advanced_test=args.advanced,
+                tcp_host=args.tcp_host, tcp_port=args.tcp_port, tcp_timeout=args.tcp_timeout,
+                ip_service_url=args.ip_service_url, ip_service_timeout=args.ip_service_timeout,
+                use_http_proxy=args.use_http_proxy
+            )
+            
+            logging.info(f"Testing found {len(results['working'])} working configurations")
         
-        results = test_configs(
-            configs=configs,
-            singbox_path=singbox_path,
-            test_url=test_urls,
-            timeout=args.timeout,
-            workers=workers,
-            verbose=args.verbose,
-            advanced_test=args.advanced,
-            tcp_host=args.tcp_host,
-            tcp_port=args.tcp_port,
-            tcp_timeout=args.tcp_timeout,
-            ip_service_url=args.ip_service_url,
-            ip_service_timeout=args.ip_service_timeout,
-            use_http_proxy=args.use_http_proxy
-        )
-        
-        working_configs = results["working"]
-    
-    # Report results
-    if working_configs:
-        logging.info(f"Found {len(working_configs)} working configurations")
-        
-        # Write results to output file if specified
+        # Save results
         if args.output_file:
-            write_configs_to_file(working_configs, args.output_file)
-            logging.info(f"Saved working configurations to {args.output_file}")
-        
-        # Append results to another file if specified
+            save_configs(results["working"], args.output_file)
         if args.append_output:
-            try:
-                # Read existing configs if file exists
-                existing_configs = []
-                if os.path.exists(args.append_output):
-                    with open(args.append_output, 'r', encoding='utf-8') as f:
-                        existing_configs = [line.strip() for line in f.readlines() if line.strip()]
-                
-                # Combine and deduplicate
-                combined = list(set(existing_configs + working_configs))
-                
-                # Write back
-                with open(args.append_output, 'w', encoding='utf-8') as f:
-                    for config in combined:
-                        f.write(f"{config}\n")
-                
-                new_count = len(combined) - len(existing_configs)
-                logging.info(f"Appended {new_count} new configs to {args.append_output} "
-                           f"(total: {len(combined)})")
-            except Exception as e:
-                logging.error(f"Error appending to {args.append_output}: {e}")
-    else:
-        logging.warning("No working configurations found")
+            save_configs(results["working"], args.append_output, append=True)
+            
+        if not args.output_file and not args.append_output:
+            logging.warning("No output file specified. Results will not be saved.")
+            
+        logging.info("Testing completed successfully")
+        
+    except Exception as e:
+        logging.error(f"Error during testing: {e}", exc_info=args.verbose)
+        return 1
+    finally:
+        # Cleanup
+        cleanup_all_temp_files()
+        shutdown_process_manager()  # Завершаем работу менеджера процессов
     
-    # Clean up any temporary files
-    cleanup_all_temp_files()
-    
-    return 0 if working_configs else 1
+    return 0
 
 if __name__ == "__main__":
     sys.exit(main())

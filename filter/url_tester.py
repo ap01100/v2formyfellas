@@ -17,6 +17,35 @@ from filter.config import (
 )
 from filter.utils import find_free_port, cleanup_process, cleanup_file, wait_for_port, get_temp_file_path
 from filter.parsers import convert_to_singbox_config
+from filter.process_manager import SingBoxProcessManager
+
+# Глобальный экземпляр менеджера процессов
+_process_manager = None
+
+def get_process_manager(singbox_path: str, verbose: bool = False) -> SingBoxProcessManager:
+    """
+    Получить или создать глобальный экземпляр менеджера процессов
+    
+    Args:
+        singbox_path: Путь к исполняемому файлу sing-box
+        verbose: Подробный вывод логов
+        
+    Returns:
+        Экземпляр SingBoxProcessManager
+    """
+    global _process_manager
+    if _process_manager is None:
+        # Определяем оптимальное количество процессов на основе доступных ресурсов
+        import multiprocessing
+        max_processes = max(50, multiprocessing.cpu_count() * 5)  # Минимум 50, но может быть больше в зависимости от CPU
+        
+        _process_manager = SingBoxProcessManager(
+            singbox_path=singbox_path,
+            max_processes=max_processes,
+            idle_timeout=60,  # 1 минута таймаут для неиспользуемых процессов
+            verbose=verbose
+        )
+    return _process_manager
 
 def perform_url_test(
     config_str: str, 
@@ -61,169 +90,92 @@ def perform_url_test(
         "latency_ms": None  # Will be average of successful URLs
     }
     
-    socks_port = None
-    config_file = None
-    proxy_process = None
+    # Получаем менеджер процессов
+    process_manager = get_process_manager(singbox_path, verbose)
+    
+    # Получаем или создаем процесс для этой конфигурации
+    sing_process = process_manager.get_process(config_str, use_http_proxy)
+    
+    if not sing_process:
+        result["error"] = "Failed to start sing-box process"
+        if verbose:
+            logging.debug(f"{log_prefix} {result['error']}")
+        return result
     
     try:
-        # 1. Find free port and generate sing-box config
-        socks_port = find_free_port()
-        if verbose:
-            logging.debug(f"{log_prefix} Using port {socks_port}")
-            
-        log_level = "debug" if verbose else "warn"
-        singbox_config = convert_to_singbox_config(config_str, socks_port, log_level, use_http_proxy)
-        
-        # 2. Write config to temp file in workfiles directory
-        config_file = get_temp_file_path("temp", socks_port)
-        with open(config_file, "w", encoding="utf-8") as tmp:
-            json.dump(singbox_config, tmp)
-            
-        if verbose:
-            logging.debug(f"{log_prefix} Config written to {config_file}")
-            
-        # 3. Start sing-box
-        cmd = [singbox_path, "run", "-c", config_file]
-        if verbose:
-            logging.debug(f"{log_prefix} Running command: {' '.join(cmd)}")
-            
-        proxy_process = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-        )
-        
-        # 4. Wait for sing-box to start
-        if verbose:
-            logging.debug(f"{log_prefix} Waiting for port {socks_port} to be ready...")
-            
-        if not wait_for_port("127.0.0.1", socks_port):
-            error_msg = f"Timeout waiting for sing-box to start on port {socks_port}"
-            if verbose:
-                logging.debug(f"{log_prefix} {error_msg}")
-            result["error"] = error_msg
-            return result
+        # Получаем URL прокси для requests
+        proxy_url = sing_process.get_proxy_url(use_http_proxy)
         
         if verbose:
-            logging.debug(f"{log_prefix} sing-box started successfully on port {socks_port}")
-            
-        # 5. Setup proxies and headers for requests
-        if use_http_proxy:
-            proxies = {
-                "http": f"http://127.0.0.1:{socks_port}",
-                "https": f"http://127.0.0.1:{socks_port}"
-            }
-        else:
-            proxies = {
-                "http": f"socks5h://127.0.0.1:{socks_port}",
-                "https": f"socks5h://127.0.0.1:{socks_port}"
-            }
-        headers = {"User-Agent": USER_AGENT}
+            logging.debug(f"{log_prefix} Using proxy {proxy_url}")
         
-        # 6. Test each URL
+        # Настраиваем сессию requests с прокси
+        session = requests.Session()
+        session.proxies = {
+            "http": proxy_url,
+            "https": proxy_url
+        }
+        session.headers.update({"User-Agent": USER_AGENT})
+        
+        # Тестируем все URL
         successful_tests = 0
         total_latency = 0
         
-        for current_url in test_urls:
+        for url in test_urls:
             url_result = {
-                "url": current_url,
+                "url": url,
                 "success": False,
                 "latency_ms": None,
                 "error": None
             }
             
-            if verbose:
-                logging.debug(f"{log_prefix} Testing URL: {current_url}")
-            
-            # Добавляем повторные попытки
-            retry_count = 0
-            while retry_count <= MAX_RETRY_COUNT:
+            # Выполняем запрос с повторными попытками
+            for retry in range(MAX_RETRY_COUNT + 1):
                 try:
-                    # Measure request time
+                    if verbose and retry > 0:
+                        logging.debug(f"{log_prefix} Retry {retry} for {url}")
+                    
                     start_time = time.time()
-                    response = requests.get(current_url, proxies=proxies, headers=headers, timeout=timeout, verify=True)
+                    response = session.get(url, timeout=timeout, allow_redirects=True)
                     end_time = time.time()
                     
-                    # Calculate latency
+                    # Проверяем успешность запроса
+                    response.raise_for_status()
+                    
+                    # Запрос успешен
                     latency_ms = round((end_time - start_time) * 1000)
-                    
-                    # Check if request was successful
-                    response.raise_for_status()  # Raises exception for 4XX/5XX responses
-                    
-                    # Update URL result with success data
                     url_result["success"] = True
                     url_result["latency_ms"] = latency_ms
+                    
+                    if verbose:
+                        logging.debug(f"{log_prefix} Successfully tested {url} in {latency_ms}ms")
+                    
                     successful_tests += 1
                     total_latency += latency_ms
-                    
-                    if verbose:
-                        logging.debug(f"{log_prefix} URL test successful: {current_url}, latency: {latency_ms}ms")
-                    
-                    # Если успешно, прерываем цикл повторных попыток
                     break
                     
-                except requests.exceptions.ConnectTimeout as e:
-                    # Тайм-аут соединения, можно повторить
-                    error_desc = f"Connection timeout after {timeout}s"
-                    
-                    if retry_count < MAX_RETRY_COUNT:
-                        if verbose:
-                            logging.debug(f"{log_prefix} URL test timeout, retrying ({retry_count+1}/{MAX_RETRY_COUNT}): {current_url}")
-                        retry_count += 1
-                        time.sleep(RETRY_DELAY)
-                        continue
-                    
-                    url_result["error"] = f"Request error: {error_desc}"
-                    if verbose:
-                        logging.debug(f"{log_prefix} URL test failed after {retry_count} retries: {current_url}: {url_result['error']}")
-                    
-                except requests.exceptions.ReadTimeout as e:
-                    # Тайм-аут чтения, можно повторить
-                    error_desc = f"Read timeout after {timeout}s"
-                    
-                    if retry_count < MAX_RETRY_COUNT:
-                        if verbose:
-                            logging.debug(f"{log_prefix} URL test read timeout, retrying ({retry_count+1}/{MAX_RETRY_COUNT}): {current_url}")
-                        retry_count += 1
-                        time.sleep(RETRY_DELAY)
-                        continue
-                    
-                    url_result["error"] = f"Request error: {error_desc}"
-                    if verbose:
-                        logging.debug(f"{log_prefix} URL test failed after {retry_count} retries: {current_url}: {url_result['error']}")
-                
                 except requests.exceptions.RequestException as e:
-                    # Handle request errors
-                    error_desc = str(e)
-                    if hasattr(e, 'response') and e.response:
-                        error_desc = f"HTTP {e.response.status_code}: {error_desc[:100]}"
+                    # Обрабатываем ошибки запроса
+                    error_type = type(e).__name__
+                    error_msg = str(e)
                     
-                    # Определим, следует ли повторить запрос для других типов ошибок
-                    retriable_error = isinstance(e, (
-                        requests.exceptions.ProxyError,
-                        requests.exceptions.ConnectionError
-                    ))
+                    # Сокращаем сообщение об ошибке, если оно слишком длинное
+                    if len(error_msg) > 100:
+                        error_msg = error_msg[:100] + "..."
                     
-                    if retriable_error and retry_count < MAX_RETRY_COUNT:
-                        if verbose:
-                            logging.debug(f"{log_prefix} URL test error, retrying ({retry_count+1}/{MAX_RETRY_COUNT}): {current_url}: {error_desc}")
-                        retry_count += 1
+                    url_result["error"] = f"{error_type}: {error_msg}"
+                    
+                    if verbose:
+                        logging.debug(f"{log_prefix} Error testing {url}: {url_result['error']}")
+                    
+                    # Если это не последняя попытка, ждем перед повторной попыткой
+                    if retry < MAX_RETRY_COUNT:
                         time.sleep(RETRY_DELAY)
-                        continue
-                    
-                    url_result["error"] = f"Request error: {error_desc}"
-                    if verbose:
-                        logging.debug(f"{log_prefix} URL test failed: {current_url}: {url_result['error']}")
-                
-                except Exception as e:
-                    # Handle other errors
-                    url_result["error"] = f"Unknown error: {type(e).__name__}: {str(e)}"
-                    if verbose:
-                        logging.debug(f"{log_prefix} URL test failed: {current_url}: {url_result['error']}")
-                
-                # Если попали сюда, значит произошла ошибка и повторные попытки не помогли
-                break
+                    else:
+                        if verbose:
+                            logging.debug(f"{log_prefix} Max retries reached for {url}")
             
-            # Add result for this URL to the list
+            # Добавляем результат для этого URL
             result["url_results"].append(url_result)
         
         # Determine overall success based on multiple URL test mode
@@ -257,11 +209,8 @@ def perform_url_test(
         if verbose:
             logging.debug(f"{log_prefix} Failed: {result['error']}")
     finally:
-        # Cleanup regardless of success or failure
-        if proxy_process:
-            cleanup_process(proxy_process, verbose)
-        if config_file and os.path.exists(config_file):
-            cleanup_file(config_file, verbose)
+        # Отмечаем процесс как неиспользуемый (он будет завершен автоматически через idle_timeout)
+        process_manager.release_process(config_str)
             
     return result
 
@@ -303,4 +252,14 @@ def perform_batch_url_tests(
     success_rate = len(result["working"]) / total * 100 if total > 0 else 0
     logging.info(f"URL testing completed: {len(result['working'])}/{total} working ({success_rate:.1f}%)")
     
-    return result 
+    return result
+
+def shutdown_process_manager():
+    """
+    Завершить работу менеджера процессов.
+    Должно быть вызвано перед завершением программы.
+    """
+    global _process_manager
+    if _process_manager:
+        _process_manager.shutdown()
+        _process_manager = None 
