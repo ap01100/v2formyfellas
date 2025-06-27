@@ -8,6 +8,7 @@ import logging
 import time
 import os
 import sys
+import signal
 from typing import List, Dict, Any, Callable, TypeVar, Generic, Union
 
 T = TypeVar('T')
@@ -30,6 +31,9 @@ class ParallelExecutor(Generic[T, R]):
         """
         self.worker_func = worker_func
         self.items = items
+        self.executor = None
+        self.futures = []
+        self.interrupted = False
         
         # Автоматически определяем оптимальное количество потоков, если не указано
         if max_workers <= 0:
@@ -41,6 +45,26 @@ class ParallelExecutor(Generic[T, R]):
             self.max_workers = max_workers
         
         self.results = []  # List to store results
+        
+        # Регистрируем обработчик сигнала SIGINT
+        self.original_sigint_handler = signal.getsignal(signal.SIGINT)
+        signal.signal(signal.SIGINT, self._handle_interrupt)
+        
+    def _handle_interrupt(self, sig, frame):
+        """Обрабатывает сигнал прерывания (Ctrl+C)."""
+        if self.interrupted:
+            # Если это второй Ctrl+C, восстанавливаем оригинальный обработчик и выходим
+            logging.warning("\nПолучен повторный сигнал прерывания. Принудительное завершение...")
+            signal.signal(signal.SIGINT, self.original_sigint_handler)
+            return
+            
+        logging.warning("\nПолучен сигнал прерывания (Ctrl+C). Отмена выполняемых задач...")
+        self.interrupted = True
+        
+        # Отменяем все запущенные задачи
+        if self.executor and self.futures:
+            for future in self.futures:
+                future.cancel()
         
     def execute(self) -> List[R]:
         """
@@ -62,42 +86,60 @@ class ParallelExecutor(Generic[T, R]):
         # и ThreadPoolExecutor для всех остальных случаев
         executor_class = concurrent.futures.ThreadPoolExecutor
         
-        with executor_class(max_workers=self.max_workers) as executor:
-            # Создаем словарь future -> item для отслеживания прогресса
-            future_to_item = {executor.submit(self.worker_func, item): item for item in self.items}
-            
-            # Обрабатываем результаты по мере их завершения
-            completed = 0
-            start_time_progress = time.time()
-            last_progress_time = start_time_progress
-            
-            for future in concurrent.futures.as_completed(future_to_item):
-                completed += 1
-                item = future_to_item[future]
+        try:
+            with executor_class(max_workers=self.max_workers) as executor:
+                self.executor = executor
                 
-                try:
-                    result = future.result()
-                    self.results.append(result)
-                    
-                    # Логируем прогресс с ограничением частоты обновлений
-                    current_time = time.time()
-                    time_since_last = current_time - last_progress_time
-                    
-                    # Показываем прогресс каждые 10 элементов или каждые 5 секунд
-                    if completed % 10 == 0 or time_since_last >= 5 or completed == total_items:
-                        elapsed = current_time - start_time_progress
-                        rate = completed / elapsed if elapsed > 0 else 0
-                        eta = (total_items - completed) / rate if rate > 0 else 0
+                # Создаем словарь future -> item для отслеживания прогресса
+                future_to_item = {executor.submit(self.worker_func, item): item for item in self.items}
+                self.futures = list(future_to_item.keys())
+                
+                # Обрабатываем результаты по мере их завершения
+                completed = 0
+                start_time_progress = time.time()
+                last_progress_time = start_time_progress
+                
+                for future in concurrent.futures.as_completed(future_to_item):
+                    if self.interrupted:
+                        logging.warning("Выполнение прервано пользователем.")
+                        break
                         
-                        logging.info(f"Progress: {completed}/{total_items} ({completed/total_items*100:.1f}%), "
-                                     f"Rate: {rate:.2f} items/sec, ETA: {eta:.1f} sec")
-                        last_progress_time = current_time
+                    completed += 1
+                    item = future_to_item[future]
+                    
+                    try:
+                        if not future.cancelled():
+                            result = future.result()
+                            self.results.append(result)
                         
-                except Exception as e:
-                    logging.error(f"Error processing item: {str(item)[:30]}...: {type(e).__name__}: {str(e)}")
+                        # Логируем прогресс с ограничением частоты обновлений
+                        current_time = time.time()
+                        time_since_last = current_time - last_progress_time
+                        
+                        # Показываем прогресс каждые 10 элементов или каждые 5 секунд
+                        if completed % 10 == 0 or time_since_last >= 5 or completed == total_items:
+                            elapsed = current_time - start_time_progress
+                            rate = completed / elapsed if elapsed > 0 else 0
+                            eta = (total_items - completed) / rate if rate > 0 else 0
+                            
+                            logging.info(f"Progress: {completed}/{total_items} ({completed/total_items*100:.1f}%), "
+                                        f"Rate: {rate:.2f} items/sec, ETA: {eta:.1f} sec")
+                            last_progress_time = current_time
+                            
+                    except concurrent.futures.CancelledError:
+                        logging.debug(f"Task for item {str(item)[:30]}... was cancelled")
+                    except Exception as e:
+                        logging.error(f"Error processing item: {str(item)[:30]}...: {type(e).__name__}: {str(e)}")
+        finally:
+            # Восстанавливаем оригинальный обработчик сигнала
+            signal.signal(signal.SIGINT, self.original_sigint_handler)
         
         elapsed = time.time() - start_time
-        logging.info(f"Parallel execution completed in {elapsed:.2f} seconds, processed {len(self.results)} items")
+        if self.interrupted:
+            logging.info(f"Parallel execution interrupted after {elapsed:.2f} seconds, processed {len(self.results)}/{total_items} items")
+        else:
+            logging.info(f"Parallel execution completed in {elapsed:.2f} seconds, processed {len(self.results)} items")
+        
         return self.results
 
 def run_parallel_tests(
@@ -170,6 +212,7 @@ def run_url_tests_parallel(configs: List[str], test_func: Callable, max_workers:
             timeout: Request timeout in seconds
             singbox_path: Path to sing-box executable
             verbose: Enable verbose logging
+            use_http_proxy: Use HTTP proxy instead of SOCKS5
         
     Returns:
         Dict with 'working' and 'failed' lists

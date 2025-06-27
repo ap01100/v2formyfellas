@@ -3,5 +3,6 @@
 # Строки, начинающиеся с # - комментарии и игнорируются
 
 # Основные тестовые URL
-http://cp.cloudflare.com
-https://gemini.google.com
+# http://cp.cloudflare.com
+# https://gemini.google.com
+https://ya.ru

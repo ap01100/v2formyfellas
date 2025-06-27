@@ -6,12 +6,16 @@ Contains all constants and configuration settings.
 # Default settings
 DEFAULT_TEST_URLS = ["http://cp.cloudflare.com", "https://gemini.google.com"]  # List of URLs to test
 MULTIPLE_URL_MODE = "all"  # Options: "all" (all URLs must work), "any" (at least one must work)
-DEFAULT_TIMEOUT = 10
+DEFAULT_TIMEOUT = 5  # Уменьшен таймаут с 10 до 5 секунд
 DEFAULT_WORKERS = 5
 MAX_WAIT_TIME = 15  # Maximum time to wait for sing-box to start
 MAX_ERROR_OUTPUT_LEN = 1000  # Maximum length of error output to log
 SOCKET_CHECK_INTERVAL = 0.2  # Interval between socket connection checks
 DEFAULT_SS_METHOD = "aes-256-gcm"  # Default method for Shadowsocks
+
+# Retry settings
+MAX_RETRY_COUNT = 2  # Количество повторных попыток при ошибке
+RETRY_DELAY = 1  # Задержка между повторными попытками в секундах
 
 # Advanced test settings
 DEFAULT_TCP_TEST_HOST = "8.8.8.8"  # Host for TCP Ping/Latency tests

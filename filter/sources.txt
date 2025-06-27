@@ -4,8 +4,8 @@
 # Данные из всех источников автоматически проверяются на base64-кодирование
 
 # Стандартные источники
-# https://raw.githubusercontent.com/Epodonios/v2ray-configs/refs/heads/main/All_Configs_Sub.txt
-# https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/splitted/subscribe
+https://raw.githubusercontent.com/Epodonios/v2ray-configs/refs/heads/main/All_Configs_Sub.txt
+https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/splitted/subscribe
 https://raw.githubusercontent.com/ap01100/v2formyfellas/refs/heads/main/configs.txt
 
 

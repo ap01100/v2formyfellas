@@ -135,10 +135,15 @@ def tcp_ping_latency_test(
                     # Read output from terminated process
                     _, stderr_bytes = proxy_process.communicate(timeout=1)
                     stderr_output = stderr_bytes.decode('utf-8', errors='replace')[:500]  # Limit length
-                except Exception:
-                    pass  # Ignore read errors as process already crashed
-                
-                error_msg = f"sing-box failed to start (code {proxy_process.poll()}). Stderr: {stderr_output}"
+                    
+                    # Проверяем наличие конкретных ошибок
+                    if "Only one usage of each socket address" in stderr_output:
+                        error_msg = f"sing-box failed to start: порт {socks_port} уже используется. Попробуйте запустить тест позже или с меньшим количеством потоков."
+                    else:
+                        error_msg = f"sing-box failed to start (code {proxy_process.poll()}). Stderr: {stderr_output}"
+                except Exception as e:
+                    error_msg = f"sing-box failed to start (code {proxy_process.poll()}). Error reading stderr: {str(e)}"
+                    
                 logging.warning(f"{log_prefix} {error_msg}")
                 return False, None, error_msg
             
@@ -304,6 +309,16 @@ def get_outbound_ip(
         except requests.exceptions.Timeout:
             error_msg = f"Timeout ({timeout} sec) requesting IP service"
             logging.warning(f"{log_prefix} {error_msg}")
+            return None, error_msg
+        except requests.exceptions.SSLError as e:
+            # Обрабатываем SSL-ошибки отдельно, так как они часто возникают
+            error_msg = f"SSLError - {str(e)[:150]}"
+            logging.warning(f"{log_prefix} Error requesting IP service: {error_msg}")
+            
+            # Проверяем, связана ли ошибка с EOF в нарушение протокола
+            if "EOF occurred in violation of protocol" in str(e):
+                error_msg += " (возможно, прокси не поддерживает HTTPS или блокирует соединение)"
+            
             return None, error_msg
         except requests.exceptions.ProxyError as e:
             # SOCKS error (e.g., sing-box crashed or can't connect further)

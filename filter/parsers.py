@@ -238,21 +238,42 @@ def parse_vless_config(config_str: str) -> Dict[str, Any]:
 
     return outbound
 
-def convert_to_singbox_config(config_str: str, socks_port: int, log_level: str = "warn") -> Dict[str, Any]:
+def convert_to_singbox_config(config_str: str, socks_port: int, log_level: str = "warn", use_http_proxy: bool = False) -> Dict[str, Any]:
     """Converts a configuration string to sing-box JSON format."""
     base_config = {
         "log": {"level": log_level, "timestamp": True},
-        "inbounds": [{
-            "type": "socks", "tag": "socks-in", "listen": "127.0.0.1",
-            "listen_port": socks_port, "sniff": True,
-            "sniff_override_destination": True, "users": []
-        }],
+        "inbounds": [],
         "outbounds": []
     }
+
+    # Настраиваем входящее соединение в зависимости от типа
+    if use_http_proxy:
+        inbound = {
+            "type": "http",
+            "tag": "http-in",
+            "listen": "127.0.0.1",
+            "listen_port": socks_port,
+            "sniff": True,
+            "sniff_override_destination": True
+        }
+    else:
+        inbound = {
+            "type": "socks",
+            "tag": "socks-in",
+            "listen": "127.0.0.1",
+            "listen_port": socks_port,
+            "sniff": True,
+            "sniff_override_destination": True,
+            "users": []
+        }
+    
+    base_config["inbounds"].append(inbound)
+    
     parser_map = {
         "ss://": parse_ss_config, "trojan://": parse_trojan_config,
         "vmess://": parse_vmess_config, "vless://": parse_vless_config,
     }
+    
     parsed_outbound = None
     protocol_parsed = "unknown"
     for prefix, parser in parser_map.items():
@@ -273,9 +294,10 @@ def convert_to_singbox_config(config_str: str, socks_port: int, log_level: str =
     base_config["outbounds"].append({"type": "block", "tag": "block"})    # Add block outbound
     
     # Simplified routing configuration
+    inbound_tag = "http-in" if use_http_proxy else "socks-in"
     base_config["route"] = {
         "rules": [
-            {"inbound": ["socks-in"], "outbound": parsed_outbound["tag"]}
+            {"inbound": [inbound_tag], "outbound": parsed_outbound["tag"]}
         ],
         "final": parsed_outbound["tag"]
     }
