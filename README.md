@@ -173,5 +173,3 @@ To add support for new proxy protocols:
 1. Add a parser function in `parsers.py`
 2. Update the `parser_map` dictionary in the `convert_to_singbox_config` function
 
-# Visitors
-![Visitors count](https://profile-counter.glitch.me/ap01100_v2rayformyfellas/count.svg)
